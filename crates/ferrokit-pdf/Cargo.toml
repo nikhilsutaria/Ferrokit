@@ -1,0 +1,19 @@
+[package]
+name = "ferrokit-pdf"
+description = "Ferrokit PDF engine: page surgery via qpdf, stamping/metadata/images via lopdf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lopdf = "0.34"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+flate2 = "1"
+rayon = "1"
+tempfile = "3"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

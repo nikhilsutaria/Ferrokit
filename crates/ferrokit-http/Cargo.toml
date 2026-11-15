@@ -1,0 +1,23 @@
+[package]
+name = "ferrokit-http"
+description = "Shared HTTP plumbing for Ferrokit: JSON errors, multipart in, file out"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+pdf = ["dep:ferrokit-pdf"]
+image = ["dep:ferrokit-image"]
+sign = ["dep:ferrokit-sign"]
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = "0.1"
+ferrokit-pdf = { path = "../ferrokit-pdf", optional = true }
+ferrokit-image = { path = "../ferrokit-image", optional = true }
+ferrokit-sign = { path = "../ferrokit-sign", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

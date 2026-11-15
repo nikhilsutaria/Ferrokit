@@ -1,0 +1,33 @@
+[package]
+name = "ferrokit-worker"
+description = "Ferrokit add-on worker: runs LibreOffice, Chromium, Ghostscript and Tesseract jobs for the core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ferrokit-worker"
+path = "src/main.rs"
+
+[dependencies]
+ferrokit-http = { path = "../ferrokit-http" }
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "process", "time", "fs"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tempfile = "3"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+chromiumoxide = "0.9"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+quick-xml = "0.38"
+mime_guess = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

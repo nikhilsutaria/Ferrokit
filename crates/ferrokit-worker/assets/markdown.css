@@ -1,0 +1,26 @@
+/* Ferrokit's Markdown print style: quiet, readable, made for paper. */
+:root { color-scheme: light; }
+html { font: 11pt/1.55 "Liberation Serif", "Noto Serif", "Noto Serif CJK SC", Georgia, serif; color: #1d1d1b; }
+body { margin: 0; }
+.markdown { max-width: 100%; }
+h1, h2, h3, h4, h5, h6 { font-family: "Liberation Sans", "Noto Sans", "Noto Sans CJK SC", Arial, sans-serif; line-height: 1.25; margin: 1.4em 0 .5em; break-after: avoid; }
+h1 { font-size: 22pt; margin-top: 0; }
+h2 { font-size: 16pt; border-bottom: .5pt solid #bbb; padding-bottom: .15em; }
+h3 { font-size: 13pt; }
+h4, h5, h6 { font-size: 11pt; }
+p, ul, ol, dl, blockquote, table, pre { margin: 0 0 .8em; }
+a { color: #1d4e89; }
+img { max-width: 100%; }
+blockquote { margin-left: 0; padding-left: 1em; border-left: 3pt solid #ccc; color: #555; }
+code, pre { font-family: "Liberation Mono", "DejaVu Sans Mono", monospace; font-size: 9.5pt; }
+code { background: #f2f2f0; padding: .05em .3em; border-radius: 2pt; }
+pre { background: #f6f6f4; padding: .7em .9em; border-radius: 3pt; white-space: pre-wrap; overflow-wrap: anywhere; break-inside: avoid; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: auto; break-inside: auto; }
+th, td { border: .5pt solid #bbb; padding: .3em .6em; text-align: left; vertical-align: top; }
+th { background: #f2f2f0; }
+tr { break-inside: avoid; }
+hr { border: 0; border-top: .5pt solid #bbb; margin: 1.5em 0; }
+li > input[type="checkbox"] { margin: 0 .4em 0 -1.3em; }
+ul:has(> li > input[type="checkbox"]) { list-style: none; }
+.footnote-definition { font-size: 9pt; color: #444; }

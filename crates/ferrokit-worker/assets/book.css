@@ -1,0 +1,5 @@
+/* Added after the book's own stylesheets when printing an EPUB. */
+.fk-chapter { break-before: page; }
+.fk-chapter:first-child { break-before: auto; }
+img, svg, video { max-width: 100%; height: auto; }
+body { margin: 0; }

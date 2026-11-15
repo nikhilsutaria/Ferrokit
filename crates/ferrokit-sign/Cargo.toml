@@ -1,0 +1,24 @@
+[package]
+name = "ferrokit-sign"
+description = "Ferrokit: PKCS#7 PDF signing and signature verification"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lopdf = "0.34"
+serde = { workspace = true }
+thiserror = { workspace = true }
+cms = { version = "0.3.0-rc.2", default-features = false, features = ["std"] }
+der = { version = "0.8", features = ["alloc", "derive", "oid", "std"] }
+x509-cert = { version = "0.3", default-features = false, features = ["std"] }
+spki = { version = "0.8", features = ["alloc", "std"] }
+p12-keystore = "0.4"
+rsa = { version = "0.10", features = ["pkcs1v15"] }
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
+p384 = { version = "0.14", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
+sha1 = "0.11"
+sha2 = "0.11"
+
+[dev-dependencies]
+serde_json = { workspace = true }

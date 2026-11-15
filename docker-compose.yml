@@ -1,0 +1,68 @@
+# Ferrokit on your home network.
+#   docker compose up -d --build
+# then open http://<your-server>:8080 from any device on the LAN.
+services:
+  ferrokit:
+    build: .
+    image: ferrokit:latest
+    container_name: ferrokit
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      FERROKIT_MAX_UPLOAD_MB: "1024"   # largest single request
+      # FERROKIT_JOBS: "4"             # heavy jobs at once (default: CPU count)
+      # FERROKIT_LOG: "info"           # debug for more detail
+      # FERROKIT_OFFICE_URL: "http://ferrokit-office:8090"   # where the add-ons live (defaults shown)
+      # FERROKIT_OCR_URL: "http://ferrokit-ocr:8090"
+    # Uploads and scratch files live in RAM and vanish on restart.
+    tmpfs:
+      - /tmp:size=2g
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+  # Optional add-ons. Switch them on with profiles, e.g.
+  #   docker compose --profile office --profile ocr up -d
+  # or put COMPOSE_PROFILES=office,ocr in a .env file next to this one.
+  # They talk to Ferrokit over Docker's private network; no ports are opened on your LAN.
+
+  # Office: Word/Excel/PowerPoint <-> PDF, web page / Markdown / EPUB -> PDF, PDF/A.
+  ferrokit-office:
+    profiles: [office]
+    build:
+      context: .
+      dockerfile: addons/office/Dockerfile
+    image: ferrokit-office:latest
+    container_name: ferrokit-office
+    restart: unless-stopped
+    environment:
+      FERROKIT_OFFICE_WORKERS: "2"   # warm LibreOffice instances (~200 MB RAM each)
+      FERROKIT_MAX_UPLOAD_MB: "1024"
+    tmpfs:
+      - /tmp:size=2g
+    shm_size: 512m                  # Chromium needs a roomier /dev/shm
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+  # OCR: make scanned PDFs searchable and copy text out of images (every Tesseract language).
+  ferrokit-ocr:
+    profiles: [ocr]
+    build:
+      context: .
+      dockerfile: addons/ocr/Dockerfile
+    image: ferrokit-ocr:latest
+    container_name: ferrokit-ocr
+    restart: unless-stopped
+    environment:
+      FERROKIT_MAX_UPLOAD_MB: "1024"
+    tmpfs:
+      - /tmp:size=4g
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+  # Later add-ons:
+  # media:  ffmpeg worker for video and audio tools
+  # ai:     CPU models for background removal, upscaling and transcription
