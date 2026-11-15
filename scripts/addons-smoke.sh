@@ -155,8 +155,10 @@ c_loopback() {
 while True:
     c, _ = s.accept(); open("/tmp/probe.log", "a").write("hit\n"); c.close()'
   sleep 0.5
-  printf '<!doctype html><title>probe</title><p>probe</p><img src="http://127.0.0.1:9998/img"><img src="http://localhost:9998/img2"><script>fetch("http://127.0.0.1:9998/xhr", {method: "POST", mode: "no-cors", body: "x"}).catch(() => 0)</script>' > probe.html
-  status_is 200 office/html-to-pdf probe.pdf '{"waitMs":1000}' probe.html || return 1
+  cat > probe.html <<'PROBE'
+<!doctype html><title>probe</title><p>probe</p><img src="http://127.0.0.1:9998/img"><img src="http://localhost:9998/img2"><img src="http://[::ffff:127.0.0.1]:9998/mapped"><img src="http://127.0.0.1.nip.io:9998/dns"><script>try { new WebSocket("ws://127.0.0.1:9998/ws"); } catch (e) {}fetch("http://127.0.0.1:9998/xhr", {method: "POST", mode: "no-cors", body: "x"}).catch(() => 0);</script><script>try { new Worker(URL.createObjectURL(new Blob([`fetch("http://127.0.0.1:9998/worker", {mode: "no-cors"}).catch(() => 0)`]))); } catch (e) {}</script>
+PROBE
+  status_is 200 office/html-to-pdf probe.pdf '{"waitMs":2000}' probe.html || return 1
   local hits; hits=$(docker exec ferrokit-office sh -c 'cat /tmp/probe.log 2>/dev/null | wc -l')
   echo "connections reached the listener: $hits"
   [ "$hits" -eq 0 ]

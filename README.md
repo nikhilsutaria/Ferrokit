@@ -55,7 +55,9 @@ as a non-root user, with scratch space in RAM. `FERROKIT_OFFICE_WORKERS` on the 
 service sets how many LibreOffice instances stay warm (default 2, about 200 MB each while busy).
 
 *Web page to PDF* is fetched by the Office add-on, so use addresses it can reach: your server's LAN
-address, not `localhost`. It can print pages on your home network; that's intended.
+address, not `localhost`. It can print pages on your home network; that's intended. Everything Chromium
+loads goes through a small proxy in the add-on that refuses the add-on's own addresses (loopback,
+link-local), so a printed page can't reach its internal services.
 
 ## Develop
 

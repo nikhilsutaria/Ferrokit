@@ -20,12 +20,13 @@ The design and the full tool catalog are in `docs/superpowers/specs/2026-11-13-f
 
 - **108 tools ready.** PDF is complete except PDF → Excel and Pipelines. Images are complete except the
   layered image editor.
-- **Tests:** Rust 180 (pdf 52, image 39, server 24, signing 25, http 2, worker 38). Web: 442 unit tests,
+- **Tests:** Rust 185 (pdf 52, image 39, server 24, signing 25, http 2, worker 43). Web: 442 unit tests,
   `svelte-check` clean. Add-ons: 38 end-to-end checks (`scripts/addons-smoke.sh`).
 - **Hardening after the batch 4 review:** whole process trees are killed on timeout or cancel; PDF/A,
   Markdown and EPUB batches run one per CPU core; EPUB unpacking counts real bytes; PDFs locked only against
   editing are unlocked with qpdf and processed; password-protected Office files get a clear message;
-  printed pages can't reach the add-on's internal services; add-ons are health-checked together.
+  all of Chromium's traffic goes through an egress proxy that refuses the add-on's own addresses;
+  add-ons are health-checked together.
 - **Images:** core about 65 MB; office about 1.5 GB; OCR about 1.2 GB. Office idles at about 95 MB
   (two warm LibreOffice instances) and about 500 MB once Chromium has run.
 - **How add-ons fit:** the core checks each add-on's `/health` every 15 s and forwards `/api/office/*` and

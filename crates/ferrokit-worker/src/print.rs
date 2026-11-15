@@ -73,6 +73,14 @@ impl Printer {
                 if let Some(url) = o.url.as_deref().filter(|u| !u.trim().is_empty()) {
                     let url = check_url(url).map_err(ApiError::unprocessable)?;
                     let host = host_of(&url);
+                    if !crate::egress::resolves(&url).await {
+                        return Err(ApiError::unprocessable(format!("{host} couldn't be found. Check the address.")));
+                    }
+                    if crate::egress::points_at_self(&url).await {
+                        return Err(ApiError::unprocessable(format!(
+                            "{host} points at the add-on itself. Use your server's LAN address (for example http://192.168.1.10:8080) instead of localhost."
+                        )));
+                    }
                     let pdf = self.chrome.print(&url, &o.page, o.wait_ms, true).await.map_err(|e| explain(&host, e))?;
                     return Ok(Output::new(format!("{host}.pdf"), "application/pdf", pdf));
                 }

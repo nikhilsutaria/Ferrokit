@@ -15,6 +15,7 @@ use serde_json::json;
 
 pub mod caps;
 pub mod chrome;
+pub mod egress;
 pub mod epub;
 pub mod markdown;
 pub mod ocr;

@@ -26,7 +26,8 @@ async fn main() {
     if let Some(exe) = caps.chromium.clone() {
         let jobs = ferrokit_worker::serve::Jobs::default();
         let addr = ferrokit_worker::serve::start(jobs.clone()).await.expect("loopback file server");
-        let chrome = ferrokit_worker::chrome::Chrome::new(exe, format!("http://{addr}/"));
+        let proxy = ferrokit_worker::egress::start(addr).await.expect("egress proxy");
+        let chrome = ferrokit_worker::chrome::Chrome::new(exe, proxy);
         state = state.with_printer(ferrokit_worker::print::Printer { chrome, jobs, base: format!("http://{addr}") });
     }
     if caps.unoserver {
