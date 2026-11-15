@@ -145,7 +145,7 @@ pub async fn points_at_self(url: &str) -> bool {
     found.is_ok_and(|mut addrs| addrs.any(|a| blocked(a.ip())))
 }
 
-/// Read from \`c\` into \`buf\` until it holds a complete head; returns the head's length.
+/// Read from `c` into `buf` until it holds a complete head; returns the head's length.
 async fn read_head(c: &mut TcpStream, buf: &mut Vec<u8>) -> io::Result<Option<usize>> {
     let mut chunk = [0u8; 4096];
     loop {
@@ -199,7 +199,7 @@ fn framing(head: &str, otherwise: Framing) -> Framing {
     }
 }
 
-/// Make sure \`buf\` holds at least \`n\` bytes, reading more from \`src\`.
+/// Make sure `buf` holds at least `n` bytes, reading more from `src`.
 async fn fill(src: &mut TcpStream, buf: &mut Vec<u8>, n: usize) -> io::Result<()> {
     let mut chunk = [0u8; 8192];
     while buf.len() < n {
@@ -212,7 +212,7 @@ async fn fill(src: &mut TcpStream, buf: &mut Vec<u8>, n: usize) -> io::Result<()
     Ok(())
 }
 
-/// One line (with its CRLF) from the front of \`buf\`, reading more as needed.
+/// One line (with its CRLF) from the front of `buf`, reading more as needed.
 async fn line(src: &mut TcpStream, buf: &mut Vec<u8>) -> io::Result<Vec<u8>> {
     loop {
         if let Some(i) = buf.windows(2).position(|w| w == b"\r\n") {
@@ -226,30 +226,33 @@ async fn line(src: &mut TcpStream, buf: &mut Vec<u8>) -> io::Result<Vec<u8>> {
     }
 }
 
-/// Copy exactly one body, framed as \`f\`, from \`src\` (with \`buf\` already read) to \`dst\`. Anything after
+/// Copy exactly `n` bytes (what's already in `buf` first, then straight from `src`), streaming.
+async fn copy_exact(src: &mut TcpStream, buf: &mut Vec<u8>, dst: &mut TcpStream, n: u64) -> io::Result<()> {
+    let first = n.min(buf.len() as u64) as usize;
+    dst.write_all(&buf[..first]).await?;
+    buf.drain(..first);
+    let left = n - first as u64;
+    if left > 0 {
+        let copied = tokio::io::copy(&mut (&mut *src).take(left), dst).await?;
+        if copied < left {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+    }
+    Ok(())
+}
+
+/// Copy exactly one body, framed as `f`, from `src` (with `buf` already read) to `dst`. Anything after
 /// it (such as a second, pipelined request) is not forwarded.
 async fn copy_body(src: &mut TcpStream, buf: &mut Vec<u8>, dst: &mut TcpStream, f: Framing) -> io::Result<()> {
     match f {
         Framing::None => Ok(()),
-        Framing::Length(n) => {
-            let first = (n as usize).min(buf.len());
-            dst.write_all(&buf[..first]).await?;
-            buf.drain(..first);
-            let left = n - first as u64;
-            if left > 0 {
-                let copied = tokio::io::copy(&mut (&mut *src).take(left), dst).await?;
-                if copied < left {
-                    return Err(io::ErrorKind::UnexpectedEof.into());
-                }
-            }
-            Ok(())
-        }
+        Framing::Length(n) => copy_exact(src, buf, dst, n).await,
         Framing::Chunked => loop {
             let size_line = line(src, buf).await?;
-            dst.write_all(&size_line).await?;
             let text = String::from_utf8_lossy(&size_line);
-            let size = usize::from_str_radix(text.trim().split(';').next().unwrap_or("").trim(), 16)
+            let size = u64::from_str_radix(text.trim().split(';').next().unwrap_or("").trim(), 16)
                 .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+            dst.write_all(&size_line).await?;
             if size == 0 {
                 // Trailers, up to the empty line.
                 loop {
@@ -260,9 +263,13 @@ async fn copy_body(src: &mut TcpStream, buf: &mut Vec<u8>, dst: &mut TcpStream, 
                     }
                 }
             }
-            fill(src, buf, size + 2).await?;
-            dst.write_all(&buf[..size + 2]).await?;
-            buf.drain(..size + 2);
+            // Stream the chunk through as it arrives (never hold it all), then its closing CRLF.
+            copy_exact(src, buf, dst, size).await?;
+            let end = line(src, buf).await?;
+            if end != b"\r\n" {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            dst.write_all(&end).await?;
         },
         Framing::Close => {
             dst.write_all(buf).await?;

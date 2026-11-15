@@ -152,3 +152,45 @@ async fn chunked_responses_are_relayed_whole() {
     assert!(reply.ends_with("3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n"), "{reply:?}");
     assert!(t.elapsed() < std::time::Duration::from_secs(2), "the connection should end with the response");
 }
+
+/// A huge chunk is passed on as it arrives, not held in memory until it is complete.
+#[tokio::test]
+async fn chunks_stream_through() {
+    let (jobs, _) = server("127.0.0.1:0").await;
+    let listener = TcpListener::bind(format!("{}:0", lan_ip())).await.unwrap();
+    let lan = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut c, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = c.read(&mut buf).await;
+        // Announce 10 MB, send 1 MB, then pause.
+        c.write_all(format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n", 10 * 1024 * 1024).as_bytes()).await.unwrap();
+        c.write_all(&vec![b'x'; 1024 * 1024]).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+    let proxy = egress::start_at("127.0.0.1:0", jobs).await.unwrap();
+    let mut c = TcpStream::connect(proxy).await.unwrap();
+    c.write_all(format!("GET http://{lan}/ HTTP/1.1\r\nHost: {lan}\r\n\r\n").as_bytes()).await.unwrap();
+    let mut got = 0usize;
+    let mut buf = vec![0u8; 65536];
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
+    while let Ok(Ok(n)) = tokio::time::timeout_at(deadline, c.read(&mut buf)).await {
+        if n == 0 {
+            break;
+        }
+        got += n;
+    }
+    assert!(got > 1024 * 1024, "only {got} bytes arrived while the server paused");
+}
+
+/// A nonsense chunk size is refused without trouble, and the proxy keeps working.
+#[tokio::test]
+async fn absurd_chunk_sizes_are_refused() {
+    let (jobs, _) = server("127.0.0.1:0").await;
+    let (lan, _) = recording_server(&format!("{}:0", lan_ip()), b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nFFFFFFFFFFFFFFFFFFFF\r\nab").await;
+    let proxy = egress::start_at("127.0.0.1:0", jobs).await.unwrap();
+    let reply = ask(proxy, &format!("GET http://{lan}/ HTTP/1.1\r\nHost: {lan}\r\n\r\n")).await;
+    assert!(!reply.contains("ab\r\n") || reply.len() < 400, "{reply:?}");
+    let reply = ask(proxy, &format!("GET http://127.0.0.1:{}/ HTTP/1.1\r\nHost: x\r\n\r\n", jobs.port())).await;
+    assert!(reply.ends_with("ok"), "the proxy stopped working: {reply:?}");
+}
