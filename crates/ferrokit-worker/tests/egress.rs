@@ -82,3 +82,73 @@ async fn job_server_and_network_addresses_pass() {
     assert!(reply.starts_with("HTTP/1.1 200"), "{reply:?}");
     assert_eq!(lan_hits.load(Ordering::SeqCst), 2);
 }
+
+/// A keep-alive server that records every byte it receives and answers the first request.
+async fn recording_server(bind: &str, reply: &'static [u8]) -> (SocketAddr, Arc<std::sync::Mutex<Vec<u8>>>) {
+    let listener = TcpListener::bind(bind).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let s = seen.clone();
+    tokio::spawn(async move {
+        while let Ok((mut c, _)) = listener.accept().await {
+            let s = s.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let mut answered = false;
+                // Keep the connection open and keep listening, as a keep-alive server would.
+                while let Ok(Ok(n)) = tokio::time::timeout(std::time::Duration::from_millis(800), c.read(&mut buf)).await {
+                    if n == 0 {
+                        break;
+                    }
+                    s.lock().unwrap().extend_from_slice(&buf[..n]);
+                    if !answered {
+                        answered = true;
+                        let _ = c.write_all(reply).await;
+                    }
+                }
+            });
+        }
+    });
+    (addr, seen)
+}
+
+/// Two requests on one proxy connection: only the first is sent, to its own host; the second, aimed at
+/// this machine's internal service, goes nowhere. The client is told the connection closes.
+#[tokio::test]
+async fn one_request_per_connection() {
+    let (internal, hits) = server("127.0.0.1:0").await;
+    let (jobs, _) = server("127.0.0.1:0").await;
+    let (lan, seen) = recording_server(&format!("{}:0", lan_ip()), b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok").await;
+    let proxy = egress::start_at("127.0.0.1:0", jobs).await.unwrap();
+
+    let two = format!(
+        "POST http://{lan}/first HTTP/1.1\r\nHost: {lan}\r\nContent-Length: 5\r\n\r\nhello\
+         GET http://127.0.0.1:{}/second HTTP/1.1\r\nHost: x\r\nCookie: secret=1\r\n\r\n",
+        internal.port()
+    );
+    let reply = ask(proxy, &two).await;
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply:?}");
+    assert!(reply.to_ascii_lowercase().contains("connection: close"), "{reply:?}");
+    assert!(reply.ends_with("ok"), "{reply:?}");
+
+    let got = String::from_utf8_lossy(&seen.lock().unwrap()).into_owned();
+    assert!(got.contains("POST /first") && got.contains("hello"), "{got:?}");
+    assert!(!got.contains("/second") && !got.contains("secret=1"), "the second request leaked upstream: {got:?}");
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+}
+
+/// A chunked response is passed on whole, and the connection then ends.
+#[tokio::test]
+async fn chunked_responses_are_relayed_whole() {
+    let (jobs, _) = server("127.0.0.1:0").await;
+    let (lan, _) = recording_server(
+        &format!("{}:0", lan_ip()),
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n",
+    )
+    .await;
+    let proxy = egress::start_at("127.0.0.1:0", jobs).await.unwrap();
+    let t = std::time::Instant::now();
+    let reply = ask(proxy, &format!("GET http://{lan}/ HTTP/1.1\r\nHost: {lan}\r\n\r\n")).await;
+    assert!(reply.ends_with("3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n"), "{reply:?}");
+    assert!(t.elapsed() < std::time::Duration::from_secs(2), "the connection should end with the response");
+}

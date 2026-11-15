@@ -20,7 +20,7 @@ The design and the full tool catalog are in `docs/superpowers/specs/2026-11-13-f
 
 - **108 tools ready.** PDF is complete except PDF → Excel and Pipelines. Images are complete except the
   layered image editor.
-- **Tests:** Rust 185 (pdf 52, image 39, server 24, signing 25, http 2, worker 43). Web: 442 unit tests,
+- **Tests:** Rust 187 (pdf 52, image 39, server 24, signing 25, http 2, worker 45). Web: 442 unit tests,
   `svelte-check` clean. Add-ons: 38 end-to-end checks (`scripts/addons-smoke.sh`).
 - **Hardening after the batch 4 review:** whole process trees are killed on timeout or cancel; PDF/A,
   Markdown and EPUB batches run one per CPU core; EPUB unpacking counts real bytes; PDFs locked only against

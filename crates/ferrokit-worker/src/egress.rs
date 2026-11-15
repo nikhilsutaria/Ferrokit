@@ -145,21 +145,21 @@ pub async fn points_at_self(url: &str) -> bool {
     found.is_ok_and(|mut addrs| addrs.any(|a| blocked(a.ip())))
 }
 
-async fn read_head(c: &mut TcpStream) -> io::Result<Option<(Vec<u8>, usize)>> {
-    let mut buf = Vec::with_capacity(2048);
+/// Read from \`c\` into \`buf\` until it holds a complete head; returns the head's length.
+async fn read_head(c: &mut TcpStream, buf: &mut Vec<u8>) -> io::Result<Option<usize>> {
     let mut chunk = [0u8; 4096];
     loop {
+        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            return Ok(Some(i + 4));
+        }
+        if buf.len() > MAX_HEAD {
+            return Ok(None);
+        }
         let n = c.read(&mut chunk).await?;
         if n == 0 {
             return Ok(None);
         }
         buf.extend_from_slice(&chunk[..n]);
-        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-            return Ok(Some((buf, i + 4)));
-        }
-        if buf.len() > MAX_HEAD {
-            return Ok(None);
-        }
     }
 }
 
@@ -172,11 +172,131 @@ async fn connect(addrs: &[SocketAddr]) -> Option<TcpStream> {
     None
 }
 
+/// How a message body ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Framing {
+    None,
+    Length(u64),
+    Chunked,
+    /// Until the sender closes (responses only).
+    Close,
+}
+
+fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    head.split("\r\n").skip(1).find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim().eq_ignore_ascii_case(name).then(|| v.trim())
+    })
+}
+
+fn framing(head: &str, otherwise: Framing) -> Framing {
+    if header(head, "transfer-encoding").is_some_and(|v| v.to_ascii_lowercase().contains("chunked")) {
+        Framing::Chunked
+    } else if let Some(n) = header(head, "content-length").and_then(|v| v.parse().ok()) {
+        Framing::Length(n)
+    } else {
+        otherwise
+    }
+}
+
+/// Make sure \`buf\` holds at least \`n\` bytes, reading more from \`src\`.
+async fn fill(src: &mut TcpStream, buf: &mut Vec<u8>, n: usize) -> io::Result<()> {
+    let mut chunk = [0u8; 8192];
+    while buf.len() < n {
+        let got = src.read(&mut chunk).await?;
+        if got == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        buf.extend_from_slice(&chunk[..got]);
+    }
+    Ok(())
+}
+
+/// One line (with its CRLF) from the front of \`buf\`, reading more as needed.
+async fn line(src: &mut TcpStream, buf: &mut Vec<u8>) -> io::Result<Vec<u8>> {
+    loop {
+        if let Some(i) = buf.windows(2).position(|w| w == b"\r\n") {
+            return Ok(buf.drain(..i + 2).collect());
+        }
+        if buf.len() > MAX_HEAD {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let have = buf.len();
+        fill(src, buf, have + 1).await?;
+    }
+}
+
+/// Copy exactly one body, framed as \`f\`, from \`src\` (with \`buf\` already read) to \`dst\`. Anything after
+/// it (such as a second, pipelined request) is not forwarded.
+async fn copy_body(src: &mut TcpStream, buf: &mut Vec<u8>, dst: &mut TcpStream, f: Framing) -> io::Result<()> {
+    match f {
+        Framing::None => Ok(()),
+        Framing::Length(n) => {
+            let first = (n as usize).min(buf.len());
+            dst.write_all(&buf[..first]).await?;
+            buf.drain(..first);
+            let left = n - first as u64;
+            if left > 0 {
+                let copied = tokio::io::copy(&mut (&mut *src).take(left), dst).await?;
+                if copied < left {
+                    return Err(io::ErrorKind::UnexpectedEof.into());
+                }
+            }
+            Ok(())
+        }
+        Framing::Chunked => loop {
+            let size_line = line(src, buf).await?;
+            dst.write_all(&size_line).await?;
+            let text = String::from_utf8_lossy(&size_line);
+            let size = usize::from_str_radix(text.trim().split(';').next().unwrap_or("").trim(), 16)
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+            if size == 0 {
+                // Trailers, up to the empty line.
+                loop {
+                    let t = line(src, buf).await?;
+                    dst.write_all(&t).await?;
+                    if t == b"\r\n" {
+                        return Ok(());
+                    }
+                }
+            }
+            fill(src, buf, size + 2).await?;
+            dst.write_all(&buf[..size + 2]).await?;
+            buf.drain(..size + 2);
+        },
+        Framing::Close => {
+            dst.write_all(buf).await?;
+            buf.clear();
+            tokio::io::copy(src, dst).await?;
+            Ok(())
+        }
+    }
+}
+
+/// Without these, a client or server could keep the connection for more requests.
+fn hop_by_hop(name: &str) -> bool {
+    matches!(name, "proxy-connection" | "connection" | "keep-alive" | "proxy-authorization" | "te" | "trailer" | "upgrade")
+}
+
+fn rewrite_headers(head: &str, first_line: &str) -> String {
+    let mut out = format!("{first_line}\r\n");
+    for l in head.split("\r\n").skip(1).filter(|l| !l.is_empty()) {
+        let name = l.split(':').next().unwrap_or("").trim().to_ascii_lowercase();
+        if !hop_by_hop(&name) {
+            out.push_str(l);
+            out.push_str("\r\n");
+        }
+    }
+    out.push_str("Connection: close\r\nProxy-Connection: close\r\n\r\n");
+    out
+}
+
 async fn handle(mut client: TcpStream, jobs: SocketAddr) -> io::Result<()> {
-    let Some((buf, head_len)) = read_head(&mut client).await? else { return Ok(()) };
+    let mut buf = Vec::with_capacity(4096);
+    let Some(head_len) = read_head(&mut client, &mut buf).await? else { return Ok(()) };
     let head = String::from_utf8_lossy(&buf[..head_len]).into_owned();
-    let mut lines = head.split("\r\n");
-    let Some(target) = lines.next().and_then(parse_line) else {
+    buf.drain(..head_len);
+    let Some(target) = head.split("\r\n").next().and_then(parse_line) else {
         return client.write_all(FORBIDDEN).await;
     };
     let addrs = match destinations(&target.host, target.port, jobs).await {
@@ -191,30 +311,43 @@ async fn handle(mut client: TcpStream, jobs: SocketAddr) -> io::Result<()> {
     let Some(mut upstream) = connect(&addrs).await else {
         return Ok(());
     };
-    let rest = &buf[head_len..];
-    match target.path {
-        None => {
-            client.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").await?;
-            upstream.write_all(rest).await?;
+
+    let Some(path) = target.path else {
+        // CONNECT (HTTPS, wss): a tunnel to the one checked destination.
+        client.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").await?;
+        upstream.write_all(&buf).await?;
+        let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+        return Ok(());
+    };
+
+    // Plain HTTP: exactly one request and one response, then the connection closes, so a second
+    // request can never ride along to this destination; the client must come back and be checked.
+    let version = head.split("\r\n").next().and_then(|l| l.split_whitespace().nth(2)).unwrap_or("HTTP/1.1");
+    let request_head = rewrite_headers(&head, &format!("{} {} {}", target.method, path, version));
+    upstream.write_all(request_head.as_bytes()).await?;
+    copy_body(&mut client, &mut buf, &mut upstream, framing(&head, Framing::None)).await?;
+
+    let mut rbuf = Vec::with_capacity(4096);
+    loop {
+        let Some(len) = read_head(&mut upstream, &mut rbuf).await? else { return Ok(()) };
+        let rhead = String::from_utf8_lossy(&rbuf[..len]).into_owned();
+        rbuf.drain(..len);
+        let status_line = rhead.split("\r\n").next().unwrap_or("HTTP/1.1 502 Bad Gateway").to_string();
+        let status: u16 = status_line.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(502);
+        client.write_all(rewrite_headers(&rhead, &status_line).as_bytes()).await?;
+        if (100..200).contains(&status) {
+            // An interim response (e.g. 100 Continue); the real one follows.
+            continue;
         }
-        Some(path) => {
-            let version = head.split("\r\n").next().and_then(|l| l.split_whitespace().nth(2)).unwrap_or("HTTP/1.1");
-            let mut out = format!("{} {} {}\r\n", target.method, path, version);
-            for line in lines.filter(|l| !l.is_empty()) {
-                let name = line.split(':').next().unwrap_or("").trim().to_ascii_lowercase();
-                if !matches!(name.as_str(), "proxy-connection" | "connection" | "keep-alive" | "proxy-authorization") {
-                    out.push_str(line);
-                    out.push_str("\r\n");
-                }
-            }
-            // One request per connection, so the next request is checked afresh.
-            out.push_str("Connection: close\r\n\r\n");
-            upstream.write_all(out.as_bytes()).await?;
-            upstream.write_all(rest).await?;
-        }
+        let body = if target.method.eq_ignore_ascii_case("HEAD") || status == 204 || status == 304 {
+            Framing::None
+        } else {
+            framing(&rhead, Framing::Close)
+        };
+        copy_body(&mut upstream, &mut rbuf, &mut client, body).await?;
+        let _ = client.shutdown().await;
+        return Ok(());
     }
-    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
-    Ok(())
 }
 
 /// Start the proxy on `bind` (e.g. "127.0.0.1:8092"); `jobs` is the job-file server Chromium may use.
