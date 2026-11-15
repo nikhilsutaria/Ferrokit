@@ -1,0 +1,6 @@
+# Keep LF everywhere: shell scripts, Dockerfiles and assets run on Linux.
+* text=auto eol=lf
+*.p12 binary
+*.png binary
+*.ico binary
+*.woff2 binary
