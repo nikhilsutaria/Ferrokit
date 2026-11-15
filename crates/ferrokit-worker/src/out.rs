@@ -28,6 +28,17 @@ impl Output {
     }
 }
 
+/// Run `jobs` with at most `n` going at once, keeping their order.
+pub async fn limited<F: std::future::Future>(jobs: impl IntoIterator<Item = F>, n: usize) -> Vec<F::Output> {
+    use futures_util::StreamExt;
+    futures_util::stream::iter(jobs).buffered(n.max(1)).collect().await
+}
+
+/// How many CPU cores this container may use.
+pub fn cpus() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2)
+}
+
 /// One output stays as it is; several become `zip_name` with a `count` fact.
 pub fn bundle(mut outs: Vec<Output>, zip_name: &str) -> Result<Output, ApiError> {
     if outs.len() == 1 {
@@ -114,6 +125,26 @@ mod tests {
         assert_eq!(stem(".docx"), ".docx");
         assert_eq!(ext("A.DOCX"), "docx");
         assert_eq!(ext("noext"), "");
+    }
+
+    #[tokio::test]
+    async fn limited_runs_at_most_n_at_once_and_keeps_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let now = std::sync::Arc::new(AtomicUsize::new(0));
+        let peak = std::sync::Arc::new(AtomicUsize::new(0));
+        let jobs = (0..6).map(|i| {
+            let (now, peak) = (now.clone(), peak.clone());
+            async move {
+                let n = now.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(n, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                now.fetch_sub(1, Ordering::SeqCst);
+                i
+            }
+        });
+        let out = limited(jobs, 2).await;
+        assert_eq!(out, vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
     }
 
     #[test]

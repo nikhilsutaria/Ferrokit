@@ -1,6 +1,7 @@
 <script lang="ts">
   import { saveBlob, stem } from '$lib/files';
   import { buildEpub, splitChapters } from '$lib/logic/epub';
+  import { latest } from '$lib/logic/latest';
   import { pdfToMarkdown } from '$lib/logic/pdf-markdown';
   import { extractPdfText } from '$lib/pdf-text';
   import FileDrop from '$lib/ui/FileDrop.svelte';
@@ -25,17 +26,23 @@
     if (f) void read(f);
   });
 
+  // Picking another PDF while one is still being read: only the newest read may show its result.
+  const nextRead = latest();
+
   async function read(file: File, pw?: string) {
+    const current = nextRead();
     busy = true;
     progress = 0;
     try {
-      const text = await extractPdfText(file, pw, (done) => (progress = done));
+      const text = await extractPdfText(file, pw, (done) => current() && (progress = done));
+      if (!current()) return;
       markdown = pdfToMarkdown({ pages: text.pages });
       title = text.title || stem(file.name);
       author = text.author;
       needPassword = false;
       if (!markdown.trim()) error = 'This PDF has no text to put in a book. If it’s a scan, run Make searchable (OCR) on it first.';
     } catch (e) {
+      if (!current()) return;
       const err = e as Error;
       if (err.name === 'PasswordException') {
         needPassword = true;
@@ -44,7 +51,7 @@
         error = `Couldn’t read this PDF: ${err.message}`;
       }
     } finally {
-      busy = false;
+      if (current()) busy = false;
     }
   }
 

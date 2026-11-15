@@ -5,6 +5,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chromiumoxide::cdp::browser_protocol::fetch::{
+    ContinueRequestParams, EnableParams as InterceptParams, EventRequestPaused, FailRequestParams, RequestPattern,
+};
+use chromiumoxide::cdp::browser_protocol::network::ErrorReason;
 use chromiumoxide::cdp::browser_protocol::page::PrintToPdfParams;
 use chromiumoxide::{Browser, BrowserConfig, Page};
 use futures_util::StreamExt;
@@ -99,15 +103,58 @@ pub enum ChromeError {
     Engine(String),
 }
 
+/// Whether `url` points at this machine itself (127.x, localhost, ::1, 0.0.0.0), where the worker's
+/// internal services (such as LibreOffice's control port) listen.
+pub fn is_loopback(url: &str) -> bool {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if let Some(v6) = host_port.strip_prefix('[') {
+        v6.split(']').next().unwrap_or("")
+    } else {
+        host_port.split(':').next().unwrap_or("")
+    };
+    let h = host.to_ascii_lowercase();
+    h == "localhost" || h.ends_with(".localhost") || h.starts_with("127.") || h == "::1" || h == "0.0.0.0"
+}
+
 pub struct Chrome {
     exe: PathBuf,
+    /// The one loopback address pages may load: the worker's own job-file server.
+    allowed_local: String,
     browser: RwLock<Option<Arc<Browser>>>,
     tabs: Semaphore,
 }
 
 impl Chrome {
-    pub fn new(exe: PathBuf) -> Arc<Self> {
-        Arc::new(Self { exe, browser: RwLock::new(None), tabs: Semaphore::new(4) })
+/// `allowed_local` is the job-file server's address, e.g. `http://127.0.0.1:8091/`.
+    pub fn new(exe: PathBuf, allowed_local: String) -> Arc<Self> {
+        Arc::new(Self { exe, allowed_local, browser: RwLock::new(None), tabs: Semaphore::new(4) })
+    }
+
+    /// Stop the tab's requests to this machine's loopback, except to the job-file server, so a page
+    /// being printed can't talk to the worker's internal services.
+    async fn guard_loopback(&self, page: &Page) -> Result<(), String> {
+        let mut paused = page.event_listener::<EventRequestPaused>().await.map_err(|e| e.to_string())?;
+        // Broad patterns; each paused request is then checked exactly.
+        let patterns = ["*://127.*", "*://localhost*", "*://*.localhost*", "*://[::1]*", "*://0.0.0.0*"]
+            .iter()
+            .map(|p| RequestPattern { url_pattern: Some(p.to_string()), ..Default::default() })
+            .collect();
+        page.execute(InterceptParams { patterns: Some(patterns), handle_auth_requests: None }).await.map_err(|e| e.to_string())?;
+        let (page, allowed) = (page.clone(), self.allowed_local.clone());
+        tokio::spawn(async move {
+            while let Some(ev) = paused.next().await {
+                let url = &ev.request.url;
+                if url.starts_with(&allowed) || !is_loopback(url) {
+                    let _ = page.execute(ContinueRequestParams::new(ev.request_id.clone())).await;
+                } else {
+                    tracing::info!("blocked a printed page's request to {url}");
+                    let _ = page.execute(FailRequestParams::new(ev.request_id.clone(), ErrorReason::BlockedByClient)).await;
+                }
+            }
+        });
+        Ok(())
     }
 
     async fn launch(&self) -> Result<Arc<Browser>, String> {
@@ -195,6 +242,7 @@ impl Chrome {
         let page = browser.new_page("about:blank").await.map_err(|e| ChromeError::Engine(e.to_string()))?;
         // Closes the tab however this ends: done, failed, timed out, or the request went away.
         let tab = Tab(Some(page.clone()));
+        self.guard_loopback(&page).await.map_err(ChromeError::Engine)?;
         let work = async {
             page.goto(url).await.map_err(|e| classify(&e.to_string()))?;
             if settle {
@@ -257,6 +305,10 @@ fn classify(e: &str) -> ChromeError {
         ("ERR_CONNECTION_TIMED_OUT", "didn't answer."),
         ("ERR_ADDRESS_UNREACHABLE", "isn't reachable from the Ferrokit server."),
         ("ERR_CERT", "has a security certificate problem."),
+        (
+            "ERR_BLOCKED_BY_CLIENT",
+            "points at the add-on itself. Use your server's LAN address (for example http://192.168.1.10:8080) instead of localhost.",
+        ),
         ("ERR_INTERNET_DISCONNECTED", "can't be reached: the server has no internet connection."),
     ];
     for (code, why) in reasons {
@@ -295,6 +347,16 @@ mod tests {
         assert_eq!(check_url(" http://10.0.0.5:3000 ").unwrap(), "http://10.0.0.5:3000");
         for bad in ["file:///etc/passwd", "javascript:alert(1)", "", "ftp://x.org"] {
             assert!(check_url(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn loopback_addresses() {
+        for url in ["http://127.0.0.1:2003/RPC2", "http://localhost/", "http://LOCALHOST:8080", "http://[::1]:2003/", "http://0.0.0.0:2003", "http://x.localhost/", "http://user@127.1.2.3/"] {
+            assert!(is_loopback(url), "{url}");
+        }
+        for url in ["http://ferrokit:8080/", "https://example.com/127.0.0.1", "http://10.0.0.5/", "http://127example.com/"] {
+            assert!(!is_loopback(url), "{url}");
         }
     }
 

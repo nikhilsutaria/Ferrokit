@@ -27,6 +27,10 @@ fn keep(name: &header::HeaderName) -> bool {
 }
 
 pub async fn forward(state: &State, addon: Addon, op: &str, req: Request) -> Result<Response, ApiError> {
+    // Tool names are short, lower-case words; anything else never reaches the worker.
+    if op.is_empty() || op.len() > 40 || !op.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "No such tool."));
+    }
     let limit = state.config.max_upload_mb * 1024 * 1024;
     let length = req.headers().get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<usize>().ok());
     if length.is_some_and(|n| n > limit) {

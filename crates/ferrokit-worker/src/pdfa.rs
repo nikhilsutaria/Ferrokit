@@ -10,7 +10,7 @@ use ferrokit_http::ApiError;
 use serde::Deserialize;
 use tokio::process::Command;
 
-use crate::office::{is_encrypted, password_message};
+use crate::office::unlock_pdf;
 use crate::out::{self, Output};
 use crate::run::{self, JobDir, RunError};
 
@@ -79,11 +79,9 @@ pub async fn handle(assets: &Path, form: Multipart) -> Result<Output, ApiError> 
     let jobs = form.files.into_iter().enumerate().map(|(i, (name, bytes))| {
         let def_ps = def_ps.clone();
         async move {
-            if is_encrypted(&bytes) {
-                return Err(ApiError::unprocessable(password_message(&name)));
-            }
             let dir = JobDir::new().map_err(internal)?;
             let input = dir.write(&format!("in-{i}.pdf"), &bytes).map_err(internal)?;
+            let input = unlock_pdf(&input, &bytes, &dir, &name).await?;
             let output = dir.path().join(format!("out-{i}.pdf"));
             let mut cmd = Command::new("gs");
             cmd.args(args(o.level, &input, &output, &def_ps));
@@ -100,7 +98,9 @@ pub async fn handle(assets: &Path, form: Multipart) -> Result<Output, ApiError> 
             Ok(Output::new(format!("{}-pdfa.pdf", out::stem(&name)), "application/pdf", pdf))
         }
     });
-    out::bundle(futures_util::future::try_join_all(jobs).await?, "pdfa.zip")
+    // One Ghostscript per CPU core; every file runs to the end even if one fails.
+    let outs = out::limited(jobs, out::cpus()).await.into_iter().collect::<Result<Vec<_>, _>>()?;
+    out::bundle(outs, "pdfa.zip")
 }
 
 fn internal(e: std::io::Error) -> ApiError {

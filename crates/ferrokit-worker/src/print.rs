@@ -100,7 +100,8 @@ impl Printer {
                         Ok::<_, ApiError>(Output::new(format!("{}.pdf", out::stem(&name)), "application/pdf", pdf))
                     }
                 });
-                out::bundle(futures_util::future::try_join_all(jobs).await?, "markdown-pdf.zip")
+                let outs = out::limited(jobs, out::cpus()).await.into_iter().collect::<Result<Vec<_>, _>>()?;
+                out::bundle(outs, "markdown-pdf.zip")
             }
             _ => {
                 if form.files.is_empty() {
@@ -123,7 +124,9 @@ impl Printer {
                         Ok::<_, ApiError>(Output::new(format!("{}.pdf", out::stem(&name)), "application/pdf", pdf))
                     }
                 });
-                out::bundle(futures_util::future::try_join_all(jobs).await?, "ebooks-pdf.zip")
+                // Each book is unpacked into RAM-backed /tmp: one per CPU core, not all at once.
+                let outs = out::limited(jobs, out::cpus()).await.into_iter().collect::<Result<Vec<_>, _>>()?;
+                out::bundle(outs, "ebooks-pdf.zip")
             }
         }
     }

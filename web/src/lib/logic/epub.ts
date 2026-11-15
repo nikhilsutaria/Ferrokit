@@ -3,7 +3,10 @@
 
 import { strToU8, zipSync, type Zippable } from 'fflate';
 
-const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// Control characters other than tab, line feed and carriage return are illegal in XML; pdf.js text can contain them.
+// eslint-disable-next-line no-control-regex
+const ILLEGAL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g;
+const esc = (s: string) => s.replace(ILLEGAL, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 /** Inline Markdown: escape, then **bold**. */
 function inline(text: string): string {

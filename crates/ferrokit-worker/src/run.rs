@@ -22,14 +22,42 @@ impl std::fmt::Display for RunError {
     }
 }
 
-/// Run `cmd` to completion, killing it if it takes longer than `limit`.
+/// Run `cmd` to completion. If it takes longer than `limit`, or the caller gives up on it, the
+/// program and everything it started (e.g. OCRmyPDF's Tesseract and Ghostscript) are killed.
 pub async fn run(mut cmd: Command, limit: Duration) -> Result<Output, RunError> {
     cmd.kill_on_drop(true).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    cmd.process_group(0);
     let child = cmd.spawn().map_err(RunError::Spawn)?;
+    let group = Group(child.id());
     match tokio::time::timeout(limit, child.wait_with_output()).await {
-        Ok(out) => out.map_err(RunError::Spawn),
-        // Dropping the future drops the child, and kill_on_drop ends it.
+        Ok(out) => {
+            group.finished();
+            out.map_err(RunError::Spawn)
+        }
+        // `group` is dropped here (or with this future, if the caller gives up): the tree is killed.
         Err(_) => Err(RunError::TimedOut),
+    }
+}
+
+/// Kills a program's whole process group when dropped, unless the program finished.
+struct Group(Option<u32>);
+
+impl Group {
+    fn finished(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.0.take() {
+            // SAFETY: plain syscall; a negative pid targets the process group created at spawn.
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
     }
 }
 
@@ -62,6 +90,40 @@ impl JobDir {
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    /// Whether a process is still running (a zombie waiting to be reaped counts as gone).
+    fn running(pid: &str) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/status")).map(|s| !s.contains("State:	Z")).unwrap_or(false)
+    }
+
+    /// `sh` starting a background `sleep` and waiting: the sleep is a grandchild of ours.
+    fn tree(pidfile: &std::path::Path) -> Command {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(format!("sleep 30 & echo $! > {}; wait", pidfile.display()));
+        cmd
+    }
+
+    #[tokio::test]
+    async fn time_limit_ends_the_whole_process_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let r = run(tree(&pidfile), Duration::from_millis(500)).await;
+        assert!(matches!(r, Err(RunError::TimedOut)));
+        let pid = std::fs::read_to_string(&pidfile).unwrap().trim().to_string();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!running(&pid), "the grandchild {pid} is still running");
+    }
+
+    #[tokio::test]
+    async fn cancelling_ends_the_whole_process_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let cancelled = tokio::time::timeout(Duration::from_millis(500), run(tree(&pidfile), Duration::from_secs(60))).await;
+        assert!(cancelled.is_err());
+        let pid = std::fs::read_to_string(&pidfile).unwrap().trim().to_string();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!running(&pid), "the grandchild {pid} is still running");
+    }
 
     #[tokio::test]
     async fn times_out() {

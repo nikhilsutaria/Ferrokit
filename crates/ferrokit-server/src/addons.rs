@@ -95,35 +95,40 @@ impl Registry {
         Value::Object(out)
     }
 
-    /// Ask every add-on for its `/health` once.
+    /// Ask every add-on for its `/health` once, all at the same time.
     pub async fn check_once(&self, client: &reqwest::Client, config: &Config) {
-        for addon in Addon::ALL {
-            let url = format!("{}/health", addon.url(config).trim_end_matches('/'));
-            let status = match client.get(&url).timeout(Duration::from_secs(3)).send().await {
-                Ok(res) if res.status().is_success() => match res.json::<Value>().await {
-                    Ok(health) => {
-                        let info = health.get(addon.name()).cloned().unwrap_or(Value::Null);
-                        let has_ops = info.get("ops").and_then(Value::as_array).is_some_and(|a| !a.is_empty());
-                        Status { ready: has_ops, info }
-                    }
-                    Err(_) => Status::default(),
-                },
-                _ => Status::default(),
-            };
-            let was = self.0.read().ok().and_then(|m| m.get(&addon).map(|s| s.ready));
-            if was != Some(status.ready) {
-                tracing::info!(addon = addon.name(), ready = status.ready, "add-on status");
-            }
-            self.set(addon, status);
+        tokio::join!(self.check(client, config, Addon::Office), self.check(client, config, Addon::Ocr));
+    }
+
+    async fn check(&self, client: &reqwest::Client, config: &Config, addon: Addon) {
+        let url = format!("{}/health", addon.url(config).trim_end_matches('/'));
+        let status = match client.get(&url).timeout(Duration::from_secs(3)).send().await {
+            Ok(res) if res.status().is_success() => match res.json::<Value>().await {
+                Ok(health) => {
+                    let info = health.get(addon.name()).cloned().unwrap_or(Value::Null);
+                    let has_ops = info.get("ops").and_then(Value::as_array).is_some_and(|a| !a.is_empty());
+                    Status { ready: has_ops, info }
+                }
+                Err(_) => Status::default(),
+            },
+            _ => Status::default(),
+        };
+        let was = self.0.read().ok().and_then(|m| m.get(&addon).map(|s| s.ready));
+        if was != Some(status.ready) {
+            tracing::info!(addon = addon.name(), ready = status.ready, "add-on status");
         }
+        self.set(addon, status);
     }
 
     /// Keep checking in the background for as long as the server runs.
     pub fn watch(self, client: reqwest::Client, config: Arc<Config>) {
         tokio::spawn(async move {
+            // Every 15 s from the start of one check to the next, however long a check takes.
+            let mut every = tokio::time::interval(CHECK_EVERY);
+            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
+                every.tick().await;
                 self.check_once(&client, &config).await;
-                tokio::time::sleep(CHECK_EVERY).await;
             }
         });
     }

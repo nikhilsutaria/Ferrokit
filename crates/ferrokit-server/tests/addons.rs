@@ -161,6 +161,29 @@ async fn connect_timeout_is_503_with_hint() {
     assert_eq!(s.addons.snapshot()["office"]["ready"], false);
 }
 
+/// A malformed tool name never reaches the worker.
+#[tokio::test]
+async fn bad_op_names_are_refused_by_the_core() {
+    let s = state(CLOSED);
+    let (status, _, _) = send(&s, upload("/api/office/Bad_Op!", "x")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = send(&s, upload("/api/office/..%2Fhealth", "x")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// Both add-ons are checked at the same time, so two stalled ones cost one connect timeout, not two.
+#[tokio::test]
+async fn addons_are_checked_together() {
+    let s = app::State::new(Config {
+        office_url: "http://10.255.255.1:9".into(),
+        ocr_url: "http://10.255.255.2:9".into(),
+        ..Config::default()
+    });
+    let t = std::time::Instant::now();
+    s.addons.check_once(&s.http, &s.config).await;
+    assert!(t.elapsed() < Duration::from_millis(4500), "took {:?}", t.elapsed());
+}
+
 #[tokio::test]
 async fn health_reports_addons() {
     let s = state(&fake_worker().await);

@@ -20,8 +20,12 @@ The design and the full tool catalog are in `docs/superpowers/specs/2026-11-13-f
 
 - **108 tools ready.** PDF is complete except PDF → Excel and Pipelines. Images are complete except the
   layered image editor.
-- **Tests:** Rust 171 (pdf 52, image 39, server 22, signing 25, http 2, worker 31). Web: 440 unit tests,
-  `svelte-check` clean. Add-ons: 33 end-to-end checks (`scripts/addons-smoke.sh`).
+- **Tests:** Rust 180 (pdf 52, image 39, server 24, signing 25, http 2, worker 38). Web: 442 unit tests,
+  `svelte-check` clean. Add-ons: 38 end-to-end checks (`scripts/addons-smoke.sh`).
+- **Hardening after the batch 4 review:** whole process trees are killed on timeout or cancel; PDF/A,
+  Markdown and EPUB batches run one per CPU core; EPUB unpacking counts real bytes; PDFs locked only against
+  editing are unlocked with qpdf and processed; password-protected Office files get a clear message;
+  printed pages can't reach the add-on's internal services; add-ons are health-checked together.
 - **Images:** core about 65 MB; office about 1.5 GB; OCR about 1.2 GB. Office idles at about 95 MB
   (two warm LibreOffice instances) and about 500 MB once Chromium has run.
 - **How add-ons fit:** the core checks each add-on's `/health` every 15 s and forwards `/api/office/*` and
@@ -35,7 +39,10 @@ The design and the full tool catalog are in `docs/superpowers/specs/2026-11-13-f
 - OCR returns the result at the end; there's no progress bar for long scans (30-minute limit per request).
 - "Clean up" in OCR only cleans what Tesseract reads; the pages look unchanged.
 - Web page to PDF runs in the add-on: use addresses the server can reach, and it can reach the LAN by design.
-  Pages behind a login print the login page.
+  It can't print `localhost` (that's the add-on itself; the error says to use the LAN address).
+  Pages behind a login print the login page. A page that never loads gives up after about 30 seconds.
+- Password-protected Office files are spotted for Word/Excel/PowerPoint (2007+) formats; an old-format
+  (.doc/.xls/.ppt) or OpenDocument file with a password still gets the "may be damaged" message.
 - EPUB → PDF needs DRM-free books. PDF → EPUB carries text only (no pictures or complex layouts).
 - Watermark and page-number text on PDFs is Latin-1 only. (Image watermarks are drawn by the browser.)
 - Merge drops bookmarks. Re-laid-out pages (n-up, single page, change size) drop links and form fields.

@@ -11,6 +11,10 @@ describe('markdownToXhtml', () => {
     expect(x).toContain('<ol><li>one</li><li>two</li></ol>');
   });
 
+  it('drops characters XML forbids (control codes from PDF text)', () => {
+    expect(markdownToXhtml('a\u0001b\u000Bc\u001Fd\tx')).toBe('<p>abcd\tx</p>');
+  });
+
   it('escapes markup in text', () => {
     expect(markdownToXhtml('a <script> b')).toBe('<p>a &lt;script&gt; b</p>');
   });

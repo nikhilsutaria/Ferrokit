@@ -20,7 +20,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui libreoffice-draw-nogui \
       python3-uno python3-pip \
-      chromium ghostscript \
+      chromium ghostscript qpdf \
       fonts-liberation fonts-dejavu-core fonts-crosextra-carlito fonts-crosextra-caladea \
       fonts-noto-core fonts-noto-cjk \
       tini wget ca-certificates \

@@ -360,6 +360,58 @@ pub fn is_encrypted(pdf: &[u8]) -> bool {
     pdf.windows(8).any(|w| w == b"/Encrypt")
 }
 
+/// A password-protected Word, Excel or PowerPoint file: an OLE container holding an
+/// "EncryptedPackage" stream instead of the usual ZIP.
+pub fn is_locked_office(bytes: &[u8]) -> bool {
+    const CFB: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+    let needle: Vec<u8> = "EncryptedPackage".encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+    bytes.starts_with(&CFB) && bytes.windows(needle.len()).any(|w| w == needle.as_slice())
+}
+
+/// What qpdf's `--requires-password` says about an encrypted PDF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lock {
+    /// Not encrypted after all.
+    Open,
+    /// Encrypted against changes only: it opens without a password.
+    OwnerOnly,
+    NeedsPassword,
+}
+
+pub fn lock_from_code(code: i32) -> Option<Lock> {
+    match code {
+        0 => Some(Lock::NeedsPassword),
+        2 => Some(Lock::Open),
+        3 => Some(Lock::OwnerOnly),
+        _ => None,
+    }
+}
+
+/// The PDF to work on: `input` itself, or a decrypted copy if it is only locked against changes.
+/// A PDF that needs a password to open is refused with a clear message.
+pub async fn unlock_pdf(input: &Path, bytes: &[u8], dir: &JobDir, name: &str) -> Result<PathBuf, ApiError> {
+    if !is_encrypted(bytes) {
+        return Ok(input.to_path_buf());
+    }
+    let mut check = Command::new("qpdf");
+    check.arg("--requires-password").arg(input);
+    let lock = run::run(check, Duration::from_secs(30)).await.ok().and_then(|o| o.status.code()).and_then(lock_from_code);
+    match lock {
+        Some(Lock::Open) => Ok(input.to_path_buf()),
+        Some(Lock::OwnerOnly) => {
+            let open = dir.path().join("unlocked.pdf");
+            let mut cmd = Command::new("qpdf");
+            cmd.arg("--decrypt").arg(input).arg(&open);
+            match run::run(cmd, Duration::from_secs(120)).await {
+                // 3 = done, with warnings.
+                Ok(o) if matches!(o.status.code(), Some(0 | 3)) && open.exists() => Ok(open),
+                _ => Err(ApiError::unprocessable(password_message(name))),
+            }
+        }
+        _ => Err(ApiError::unprocessable(password_message(name))),
+    }
+}
+
 pub fn password_message(name: &str) -> String {
     format!("{name} is password-protected. Unlock it first with Remove password.")
 }
@@ -394,16 +446,19 @@ async fn one(pool: &Arc<Pool>, op: &str, i: usize, name: String, bytes: Vec<u8>,
             if ext != "pdf" {
                 return Err(ApiError::unprocessable(format!("{name} isn't a PDF.")));
             }
-            if is_encrypted(&bytes) {
-                return Err(ApiError::unprocessable(password_message(&name)));
-            }
             let (t, f) = from_pdf_filter(to).map_err(ApiError::unprocessable)?;
             (t, Some(f))
         }
     };
+    if infilter.is_none() && is_locked_office(&bytes) {
+        return Err(ApiError::unprocessable(format!(
+            "{name} is password-protected. Remove the password in Word, Excel or PowerPoint and try again."
+        )));
+    }
     let dir = JobDir::new().map_err(internal)?;
     // ASCII names inside the job: LibreOffice and the shell never see the user's file name.
     let input = dir.write(&format!("in-{i}.{ext}"), &bytes).map_err(internal)?;
+    let input = if ext == "pdf" { unlock_pdf(&input, &bytes, &dir, &name).await? } else { input };
     let output = dir.path().join(format!("out-{i}.{target}"));
     pool.convert(&input, &output, target, infilter, FILE_LIMIT).await.map_err(|e| match e {
         OfficeError::Unreadable(_) => {
@@ -440,6 +495,24 @@ mod tests {
         assert_eq!(from_pdf_filter("docx"), Ok(("docx", "writer_pdf_import")));
         assert_eq!(from_pdf_filter("odp"), Ok(("odp", "impress_pdf_import")));
         assert_eq!(from_pdf_filter("xlsx").unwrap_err(), "PDF can become docx, odt, pptx or odp.");
+    }
+
+    #[test]
+    fn password_protected_office_files_detected() {
+        let mut cfb = vec![0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+        cfb.extend(std::iter::repeat(0).take(64));
+        cfb.extend("EncryptedPackage".encode_utf16().flat_map(|c| c.to_le_bytes()));
+        assert!(is_locked_office(&cfb));
+        assert!(!is_locked_office(b"PK an ordinary docx"));
+        assert!(!is_locked_office(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0]), "an old .doc without a password");
+    }
+
+    #[test]
+    fn qpdf_lock_codes() {
+        assert_eq!(lock_from_code(0), Some(Lock::NeedsPassword));
+        assert_eq!(lock_from_code(2), Some(Lock::Open));
+        assert_eq!(lock_from_code(3), Some(Lock::OwnerOnly));
+        assert_eq!(lock_from_code(1), None);
     }
 
     #[test]

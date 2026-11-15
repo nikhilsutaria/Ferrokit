@@ -12,7 +12,7 @@ use serde::Deserialize;
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 
-use crate::office::{is_encrypted, password_message};
+use crate::office::{password_message, unlock_pdf};
 use crate::out::{self, Output};
 use crate::run::{self, JobDir, RunError};
 
@@ -116,9 +116,7 @@ fn internal(e: impl std::fmt::Display) -> ApiError {
     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Scratch space problem: {e}"))
 }
 
-fn cpus() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2)
-}
+use crate::out::cpus;
 
 /// `pdf`: one PDF in, a searchable PDF out (plus its text, if asked).
 pub async fn pdf(installed: &[String], form: Multipart) -> Result<Output, ApiError> {
@@ -126,11 +124,9 @@ pub async fn pdf(installed: &[String], form: Multipart) -> Result<Output, ApiErr
     let o: PdfOptions = opts(form.options)?;
     let langs = check_languages(&o.languages, installed).map_err(ApiError::unprocessable)?;
     let (name, bytes) = form.files.into_iter().next().expect("read() guarantees a file");
-    if is_encrypted(&bytes) {
-        return Err(ApiError::unprocessable(password_message(&name)));
-    }
     let dir = JobDir::new().map_err(internal)?;
     let input = dir.write("in.pdf", &bytes).map_err(internal)?;
+    let input = unlock_pdf(&input, &bytes, &dir, &name).await?;
     let output = dir.path().join("out.pdf");
     let sidecar = dir.path().join("out.txt");
     let args = pdf_args(&o, &langs, cpus(), &input, &output, o.text.then_some(sidecar.as_path())).map_err(ApiError::unprocessable)?;

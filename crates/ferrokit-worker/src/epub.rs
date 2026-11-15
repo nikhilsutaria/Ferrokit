@@ -65,8 +65,13 @@ pub fn open(bytes: &[u8], dir: &Path, base_url: &str) -> Result<Book, String> {
 }
 
 fn unpack(bytes: &[u8], dir: &Path) -> Result<(), String> {
+    unpack_limited(bytes, dir, MAX_UNPACKED)
+}
+
+/// Unpack, stopping once more than `limit` bytes have actually come out (not what the ZIP claims).
+fn unpack_limited(bytes: &[u8], dir: &Path, limit: u64) -> Result<(), String> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|_| "That isn't an EPUB file.".to_string())?;
-    let mut total = 0u64;
+    let mut left = limit;
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).map_err(|_| "This e-book is damaged.".to_string())?;
         let Some(rel) = f.enclosed_name() else {
@@ -77,15 +82,15 @@ fn unpack(bytes: &[u8], dir: &Path) -> Result<(), String> {
             std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
             continue;
         }
-        total += f.size();
-        if total > MAX_UNPACKED {
-            return Err("This e-book unpacks to more than 1 GB.".into());
-        }
         if let Some(p) = out.parent() {
             std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
         }
-        let mut buf = Vec::with_capacity(f.size() as usize);
-        f.read_to_end(&mut buf).map_err(|_| "This e-book is damaged.".to_string())?;
+        let mut buf = Vec::new();
+        let read = (&mut f).take(left + 1).read_to_end(&mut buf).map_err(|_| "This e-book is damaged.".to_string())? as u64;
+        if read > left {
+            return Err("This e-book is too big to unpack (over 1 GB).".into());
+        }
+        left -= read;
         std::fs::write(&out, buf).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -328,6 +333,16 @@ mod tests {
     fn not_an_epub() {
         let dir = tempfile::tempdir().unwrap();
         assert!(open(b"hello", dir.path(), "http://x").is_err());
+    }
+
+    #[test]
+    fn unpacking_stops_at_the_size_limit() {
+        let big = "x".repeat(600);
+        let bytes = epub(&[("mimetype", "application/epub+zip"), ("a.txt", &big), ("b.txt", &big)]);
+        let dir = tempfile::tempdir().unwrap();
+        let e = unpack_limited(&bytes, dir.path(), 1000).unwrap_err();
+        assert!(e.contains("too big"), "{e}");
+        assert!(unpack_limited(&bytes, dir.path(), 5000).is_ok());
     }
 
     #[test]

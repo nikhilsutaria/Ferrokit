@@ -125,17 +125,43 @@ check "bad pdf/a level → 400"          c_bad_level
 # A page that never answers: after the 60 s limit, its tab must be closed, not left running.
 renderers() { docker exec ferrokit-office sh -c 'n=0; for f in /proc/[0-9]*/cmdline; do tr "\0" " " < "$f" 2>/dev/null | grep -q -- "--type=renderer" && n=$((n+1)); done; echo $n'; }
 c_hang() {
-  docker exec -d ferrokit-office timeout 90 python3 -c 'import socket; s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", 9999)); s.listen(64); held = []
+  docker exec -d ferrokit-office timeout 90 python3 -c 'import socket; s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("0.0.0.0", 9999)); s.listen(64); held = []
 while True: held.append(s.accept())'
   sleep 0.5
   local before; before=$(renderers)
-  status_is 422 office/html-to-pdf hang.json '{"url":"http://127.0.0.1:9999/"}' && has hang.json 'took too long' || return 1
+  status_is 422 office/html-to-pdf hang.json '{"url":"http://ferrokit-office:9999/"}' && has hang.json 'took too long' || return 1
   sleep 2
   local after; after=$(renderers)
   echo "renderers before $before, after $after"
   [ "$after" -le "$before" ]
 }
 check "page that never loads: tab closed"   c_hang
+
+# A PDF locked against changes only (no password to open): it should just work.
+o_owner_lock() { status_is 200 pdf/protect owner.pdf '{"userPassword":"","ownerPassword":"secret","allowModify":false}' notes.pdf; }
+o_owner_pdfa() { status_is 200 office/pdfa owner-a.pdf '{}' owner.pdf && starts_with owner-a.pdf %PDF; }
+o_owner_word() { status_is 200 office/from-pdf owner.docx '{"to":"docx"}' owner.pdf && starts_with owner.docx PK; }
+r_owner_ocr()  { status_is 200 ocr/pdf owner-ocr.pdf '{}' owner.pdf && starts_with owner-ocr.pdf %PDF; }
+check "pdf locked against changes only"   o_owner_lock
+check "  → pdf/a works"                   o_owner_pdfa
+check "  → word works"                    o_owner_word
+check "  → ocr works"                     r_owner_ocr
+
+# A printed page must not reach the add-on's own internal services (e.g. LibreOffice's control port).
+# A listener on the add-on's loopback writes a line for every connection; the page tries to reach it.
+c_loopback() {
+  docker exec ferrokit-office rm -f /tmp/probe.log
+  docker exec -d ferrokit-office timeout 30 python3 -c 'import socket; s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", 9998)); s.listen(16)
+while True:
+    c, _ = s.accept(); open("/tmp/probe.log", "a").write("hit\n"); c.close()'
+  sleep 0.5
+  printf '<!doctype html><title>probe</title><p>probe</p><img src="http://127.0.0.1:9998/img"><img src="http://localhost:9998/img2"><script>fetch("http://127.0.0.1:9998/xhr", {method: "POST", mode: "no-cors", body: "x"}).catch(() => 0)</script>' > probe.html
+  status_is 200 office/html-to-pdf probe.pdf '{"waitMs":1000}' probe.html || return 1
+  local hits; hits=$(docker exec ferrokit-office sh -c 'cat /tmp/probe.log 2>/dev/null | wc -l')
+  echo "connections reached the listener: $hits"
+  [ "$hits" -eq 0 ]
+}
+check "printed page can't reach loopback"    c_loopback
 
 # --- OCR (Task 8) ---
 # A 20-page "scan": render pages.pdf to 150 DPI images in the office image, then rebuild it from
