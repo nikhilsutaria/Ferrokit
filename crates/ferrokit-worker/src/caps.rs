@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 pub const OFFICE_OPS: &[&str] = &["to-pdf", "convert", "from-pdf", "html-to-pdf", "markdown-to-pdf", "epub-to-pdf", "pdfa"];
 /// The OCR ops this worker knows about.
 pub const OCR_OPS: &[&str] = &["pdf", "image"];
+/// The media ops this worker knows about.
+pub const MEDIA_OPS: &[&str] = crate::media::plan::OPS;
 
 #[derive(Debug, Clone, Default)]
 pub struct Caps {
@@ -14,6 +16,8 @@ pub struct Caps {
     pub gs: bool,
     pub ocrmypdf: bool,
     pub tesseract: bool,
+    /// ffmpeg and ffprobe are both installed.
+    pub ffmpeg: bool,
     /// Installed Tesseract languages, sorted, without `osd`.
     pub languages: Vec<String>,
 }
@@ -37,6 +41,7 @@ impl Caps {
             gs: which("gs").is_some(),
             ocrmypdf: which("ocrmypdf").is_some(),
             tesseract,
+            ffmpeg: which("ffmpeg").is_some() && which("ffprobe").is_some(),
             languages,
         }
     }
@@ -53,6 +58,14 @@ impl Caps {
             ops.push("pdfa");
         }
         ops
+    }
+
+    pub fn media_ops(&self) -> Vec<&'static str> {
+        if self.ffmpeg {
+            MEDIA_OPS.to_vec()
+        } else {
+            Vec::new()
+        }
     }
 
     pub fn ocr_ops(&self) -> Vec<&'static str> {

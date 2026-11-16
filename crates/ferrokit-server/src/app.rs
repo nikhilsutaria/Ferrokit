@@ -46,6 +46,10 @@ pub fn router(state: State) -> Router {
         .route("/image/{op}", post(crate::image::handle))
         .route("/office/{op}", post(crate::proxy::office))
         .route("/ocr/{op}", post(crate::proxy::ocr))
+        .route("/media/jobs", get(crate::proxy::media_jobs))
+        .route("/media/jobs/{id}", get(crate::proxy::media_job).delete(crate::proxy::media_job))
+        .route("/media/jobs/{id}/file", get(crate::proxy::media_job_file))
+        .route("/media/{op}", post(crate::proxy::media))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "No such API endpoint.") })
         .layer(DefaultBodyLimit::max(limit));
 

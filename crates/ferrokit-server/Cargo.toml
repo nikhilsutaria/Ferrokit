@@ -23,9 +23,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
 image = { version = "0.25", default-features = false, features = ["png"] }

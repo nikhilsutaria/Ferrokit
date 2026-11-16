@@ -1,19 +1,22 @@
 # Ferrokit — handoff notes
 
 The design and the full tool catalog are in `docs/superpowers/specs/2026-11-13-ferrokit-design.md`
-(batch 1, plus the "Batch 2", "Batch 3" and "Batch 4" sections). The batch 4 plan is in
-`docs/superpowers/plans/2026-11-15-office-ocr-addons.md`. How to run and develop is in `README.md`.
+(batch 1, plus the "Batch 2" to "Batch 5" sections). The batch 5 plan is in
+`docs/superpowers/plans/2026-11-16-media-addon.md`. How to run and develop is in `README.md`.
 
 ## Decisions
 
 - Build from scratch. No reverse-engineering of PDFill; REA isn't needed.
 - x86, no GPU. No logins, LAN only. Svelte SPA embedded in a Rust (axum) server. Slim core image plus add-on containers.
 - Batch 1: PDF and developer tools. Batch 2: every PDF tool that needs no add-on. Batch 3: image tools (core image).
-  Batch 4: the Office and OCR add-ons.
+  Batch 4: the Office and OCR add-ons. Batch 5: the Media add-on with background jobs.
 - Office add-on is our own image (LibreOffice + Chromium + Ghostscript + Rust worker), not Gotenberg, so PDF → Word works.
 - OCR bundles every Tesseract language. EPUB conversion is ours (no Calibre).
 - Redaction burns pages in as images (user's choice).
 - Pipelines are deferred.
+- Media jobs (user's choices): a progress bar with time left, and the tab can be closed; one Jobs list
+  shared by everyone on the LAN; results kept 1 hour; the job queue lives in the add-on, not the core;
+  media uploads up to 10 GB while other tools stay at 1 GB.
 - Nothing is committed yet; the user commits when they ask.
 
 ## Status at the end of batch 4 (2026-11-16)
@@ -32,6 +35,30 @@ The design and the full tool catalog are in `docs/superpowers/specs/2026-11-13-f
 - **How add-ons fit:** the core checks each add-on's `/health` every 15 s and forwards `/api/office/*` and
   `/api/ocr/*` to it unchanged. One worker binary (`crates/ferrokit-worker`) serves both images and turns on
   only what its image has installed.
+
+## Status at the end of batch 5 (2026-11-16)
+
+- **130 tools ready.** 22 video and audio tools in the `ferrokit-media` add-on, all running as background
+  jobs with a live percentage, time left, cancel and a shared **Jobs** page. Results are kept for 1 hour on
+  the `ferrokit-media-jobs` volume.
+- **Tests:** Rust 296 (pdf 52, image 39, server 31, signing 25, http 2, worker 147). Web: 480 unit tests, `svelte-check` clean. Media: 36 end-to-end checks
+  (`scripts/media-smoke.sh`, including the 1-hour expiry with a 1-minute override). Office/OCR: 38
+  end-to-end checks (`scripts/addons-smoke.sh`), unchanged.
+- **Measured:** media image about 1 GB on disk (about 300 MB download; Debian's ffmpeg and the subtitle
+  fonts are most of it), about 200 MB RAM idle. Compressing a 60-second 1080p clip to 480p took about 14 s,
+  upload included.
+- **How media fits:** the core forwards `/api/media/...` (including `Range` for scrubbing) and checks the
+  upload size against its own media limit. The same worker binary runs the job table
+  (`crates/ferrokit-worker/src/jobs.rs`: two lanes, video and audio, one job each by default) and turns
+  each tool into a fixed ffmpeg plan (`src/media/`). ffmpeg only sees fixed file names, may only read
+  local files, runs under `nice` in its own process group, and the add-on has no internet access.
+- **Found while testing:** a cancel that landed as ffmpeg was exiting could be recorded as "failed"
+  (fixed); `-protocol_whitelist` applies per input, so it goes before every `-i`, and playlist-type files
+  are refused at upload; on Windows, Git Bash rewrote `/tmp` paths in the smoke script (fixed with
+  `MSYS_NO_PATHCONV=1` and `cygpath`).
+- **Final review** (fresh reviewer): 7 important findings fixed, each with a test that failed first
+  (portrait sizing, long-video thumbnails, waveform memory, upload time limit, options cap, start-up
+  clean, health-check blips). 16 minor ones were deferred; the ones people would notice are under Known limits.
 
 ## Known limits
 
@@ -52,10 +79,19 @@ The design and the full tool catalog are in `docs/superpowers/specs/2026-11-13-f
 - HEIC opens only where the browser can decode it (Safari). AVIF encoding is slow.
 - Image tools read the first frame of animated GIFs/WebPs; compress passes GIFs through unchanged.
 - Strip-metadata works on JPEG, PNG and WebP only.
+- Media: restarting the add-on loses jobs that were running (finished results go too, since the
+  folder is cleared at start). No GPU, so long 4K encodes are slow. Files whose length ffmpeg can't read
+  show a moving bar and the time processed instead of a percentage. Anyone on the LAN can see, download or
+  cancel any job.
+- Media, deferred from the final review: merging a silent clip with others drops all sound; the
+  fast merge doesn't compare audio sample rates; files with no extension fail in tools that keep the
+  container; picture subtitle tracks are skipped without a note; non-UTF-8 .srt files burn in garbled;
+  a panic inside a job leaves its lane stuck until restart; the core's and the add-on's upload limits
+  are two settings that should match.
 
 ## Next batch candidates (not yet chosen)
 
-- Media add-on (ffmpeg): video and audio tools.
+- Move OCR onto background jobs (reuse `jobs.rs`), so long scans get a progress bar.
 - AI add-on (CPU models): background removal, upscaling, transcription.
 - Pipelines (chain tools).
 - Files & data tools (mostly browser), or the remaining developer tools.

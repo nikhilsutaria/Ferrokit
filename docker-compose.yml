@@ -15,12 +15,15 @@ services:
       # FERROKIT_LOG: "info"           # debug for more detail
       # FERROKIT_OFFICE_URL: "http://ferrokit-office:8090"   # where the add-ons live (defaults shown)
       # FERROKIT_OCR_URL: "http://ferrokit-ocr:8090"
+      # FERROKIT_MEDIA_URL: "http://ferrokit-media:8090"
+      # FERROKIT_MEDIA_MAX_UPLOAD_MB: "10240"   # largest video upload (media add-on only)
     # Uploads and scratch files live in RAM and vanish on restart.
     tmpfs:
       - /tmp:size=2g
     read_only: true
     security_opt:
       - no-new-privileges:true
+    networks: [default, media-internal]
 
   # Optional add-ons. Switch them on with profiles, e.g.
   #   docker compose --profile office --profile ocr up -d
@@ -63,6 +66,40 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # Media: video and audio tools (ffmpeg), run as background jobs with a progress bar.
+  # Results wait on the ferrokit-media-jobs volume for 1 hour, then are deleted.
+  # It sits on an internal network shared only with Ferrokit, so it has no internet access.
+  ferrokit-media:
+    profiles: [media]
+    build:
+      context: .
+      dockerfile: addons/media/Dockerfile
+    image: ferrokit-media:latest
+    container_name: ferrokit-media
+    restart: unless-stopped
+    environment:
+      FERROKIT_MEDIA_MAX_UPLOAD_MB: "10240"   # largest upload (10 GB)
+      # FERROKIT_MEDIA_VIDEO_JOBS: "1"        # video jobs at once (more just share the CPU)
+      # FERROKIT_MEDIA_AUDIO_JOBS: "1"        # audio jobs at once, in their own queue
+      # FERROKIT_MEDIA_KEEP_MIN: "60"         # minutes a finished result is kept
+      # FERROKIT_MEDIA_JOB_LIMIT_MIN: "180"   # longest one job may run
+    volumes:
+      - ferrokit-media-jobs:/jobs
+    tmpfs:
+      - /tmp:size=512m
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    networks: [media-internal]
+
   # Later add-ons:
-  # media:  ffmpeg worker for video and audio tools
   # ai:     CPU models for background removal, upscaling and transcription
+
+networks:
+  default: {}
+  # No route out: the media add-on can talk to Ferrokit and nothing else.
+  media-internal:
+    internal: true
+
+volumes:
+  ferrokit-media-jobs: {}

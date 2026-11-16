@@ -740,3 +740,27 @@ own download. Merge is one job with several inputs.
   - the core proxying `GET` / `DELETE` / Range.
 - Web tests cover the upload / poll / job-card logic and the Jobs page model.
 - The core image is unchanged at about 65 MB, and Office and OCR behave as before.
+
+**Batch 5 status (2026-11-16): done.** 22 tools added (130 ready in total), all in the `ferrokit-media`
+add-on, running as background jobs with a shared Jobs page. 36 end-to-end checks in
+`scripts/media-smoke.sh` pass against the running stack, including the expiry (with a 1-minute
+override). Measured: media image about 1 GB on disk (about 300 MB download; Debian's ffmpeg and the
+subtitle fonts are most of it, more than the 400–600 MB estimated), about 200 MB RAM idle;
+compressing a 60-second 1080p clip to 480p took about 14 s, upload included. The core image stays at
+about 66 MB. Changes from the plan, found while building and testing:
+- The media checks live in their own `scripts/media-smoke.sh`, not in `addons-smoke.sh`. The disk-full
+  507 is covered by the worker's tests rather than by filling a disk.
+- `-protocol_whitelist file,pipe` is per input in ffmpeg, so it goes before every `-i`. Because `file`
+  stays allowed, playlist-type files (HLS, DASH, concat, SDP, RTSP, tee) are also refused when probed.
+- A cancelled job stays listed as cancelled for the hour, like a failed one; a second DELETE dismisses it.
+- A cancel that landed while ffmpeg was exiting could be recorded as failed (fixed).
+- Phone videos are checked by their displayed size (rotation is read), so crops on portrait clips are
+  bounded correctly.
+- When the add-on stops, an open tool page switches to the "start the add-on" panel instead of showing
+  the job as gone.
+- After the final review: "1080p" in Compress and Resize caps the short side (portrait phone clips
+  kept shrinking to 608×1080); thumbnails are picked by time (long videos failed or lost their end);
+  waveforms are drawn from mono 8 kHz sound (memory grew about 1 GB per hour of audio); the core's
+  30-minute limit starts after the upload, so 10 GB on ordinary Wi-Fi isn't cut off; the options part is
+  capped at 64 KB; start-up removes only job folders; and a failed health check no longer swaps out
+  open tool pages (an upload is aborted if its page goes away).

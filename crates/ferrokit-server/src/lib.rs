@@ -18,6 +18,9 @@ pub struct Config {
     /// Where the optional add-on workers live.
     pub office_url: String,
     pub ocr_url: String,
+    pub media_url: String,
+    /// Largest upload for the media add-on (videos are big); everything else uses `max_upload_mb`.
+    pub media_max_upload_mb: usize,
     /// Tests only: a shorter add-on time limit.
     pub addon_limit_override: Option<std::time::Duration>,
 }
@@ -34,6 +37,8 @@ impl Config {
             qpdf: var("FERROKIT_QPDF").unwrap_or_else(|| "qpdf".into()),
             office_url: var("FERROKIT_OFFICE_URL").unwrap_or_else(|| "http://ferrokit-office:8090".into()),
             ocr_url: var("FERROKIT_OCR_URL").unwrap_or_else(|| "http://ferrokit-ocr:8090".into()),
+            media_url: var("FERROKIT_MEDIA_URL").unwrap_or_else(|| "http://ferrokit-media:8090".into()),
+            media_max_upload_mb: var("FERROKIT_MEDIA_MAX_UPLOAD_MB").and_then(|v| v.parse().ok()).unwrap_or(10240),
             addon_limit_override: None,
         }
     }
@@ -49,6 +54,8 @@ impl Default for Config {
             qpdf: "qpdf".into(),
             office_url: "http://ferrokit-office:8090".into(),
             ocr_url: "http://ferrokit-ocr:8090".into(),
+            media_url: "http://ferrokit-media:8090".into(),
+            media_max_upload_mb: 10240,
             addon_limit_override: None,
         }
     }

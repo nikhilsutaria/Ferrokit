@@ -25,9 +25,11 @@
       <h1>{tool.name}</h1>
       <p class="desc">{tool.description}</p>
       <p class="where" data-runtime={tool.runtime}>
-        {tool.runtime === 'addon' && tool.addon
-          ? `Runs in the ${ADDON_LABEL[tool.addon]} on your Ferrokit server. Files are deleted as soon as the result is sent.`
-          : runtimeNote[tool.runtime]}
+        {tool.runtime === 'addon' && tool.addon === 'media'
+          ? 'Runs in the Media add-on on your Ferrokit server. Results are kept for 1 hour, then deleted.'
+          : tool.runtime === 'addon' && tool.addon
+            ? `Runs in the ${ADDON_LABEL[tool.addon]} on your Ferrokit server. Files are deleted as soon as the result is sent.`
+            : runtimeNote[tool.runtime]}
       </p>
       {#if related.length}
         <nav class="related" aria-label="Related tools">

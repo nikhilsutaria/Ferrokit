@@ -20,7 +20,7 @@ async fn main() {
     let max_mb: usize = var("FERROKIT_MAX_UPLOAD_MB").and_then(|v| v.parse().ok()).unwrap_or(1024);
 
     let caps = Caps::detect();
-    tracing::info!(office = ?caps.office_ops(), ocr = ?caps.ocr_ops(), languages = caps.languages.len(), "capabilities");
+    tracing::info!(office = ?caps.office_ops(), ocr = ?caps.ocr_ops(), media = caps.ffmpeg, languages = caps.languages.len(), "capabilities");
     let assets = std::path::PathBuf::from(var("FERROKIT_ASSETS").unwrap_or_else(|| "/usr/local/share/ferrokit".into()));
     let mut state = AppState::new(caps.clone()).with_assets(assets.clone());
     if let Some(exe) = caps.chromium.clone() {
@@ -34,6 +34,25 @@ async fn main() {
         let n = var("FERROKIT_OFFICE_WORKERS").and_then(|v| v.parse().ok()).unwrap_or(2);
         let seed = Some(assets.join("registrymodifications.xcu")).filter(|p| p.exists());
         state = state.with_office(ferrokit_worker::office::Pool::start(n, seed).await);
+    }
+
+    if caps.ffmpeg {
+        let minutes = |k: &str, d: u64| std::time::Duration::from_secs(60 * var(k).and_then(|v| v.parse().ok()).unwrap_or(d));
+        let slots = |k: &str| var(k).and_then(|v| v.parse().ok()).filter(|&n: &usize| n > 0).unwrap_or(1);
+        let config = ferrokit_worker::media::Config {
+            jobs: ferrokit_worker::jobs::Settings {
+                dir: var("FERROKIT_MEDIA_DIR").unwrap_or_else(|| "/jobs".into()).into(),
+                video_slots: slots("FERROKIT_MEDIA_VIDEO_JOBS"),
+                audio_slots: slots("FERROKIT_MEDIA_AUDIO_JOBS"),
+                keep: minutes("FERROKIT_MEDIA_KEEP_MIN", 60),
+                limit: minutes("FERROKIT_MEDIA_JOB_LIMIT_MIN", 180),
+                max_jobs: 50,
+            },
+            max_upload: var("FERROKIT_MEDIA_MAX_UPLOAD_MB").and_then(|v| v.parse::<u64>().ok()).unwrap_or(10240) * 1024 * 1024,
+            programs: ferrokit_worker::ffmpeg::Programs::default(),
+            free_bytes_override: None,
+        };
+        state = state.with_media(ferrokit_worker::media::Media::start(config).expect("media jobs folder"));
     }
 
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse().expect("FERROKIT_WORKER_PORT");

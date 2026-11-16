@@ -82,6 +82,24 @@ async fn slow_download_is_not_cut_off() {
     assert_eq!(body, b"aaaabbbbcccc");
 }
 
+/// The limit starts once the upload has been sent: a 10 GB video on ordinary Wi-Fi takes longer to
+/// upload than the limit, and that's not the add-on failing to answer.
+#[tokio::test]
+async fn slow_upload_is_not_cut_off() {
+    let s = state_with(&fake_worker().await, Duration::from_secs(1));
+    let slow = futures_util::stream::unfold(0u8, |n| async move {
+        if n == 4 {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Some((Ok::<_, std::io::Error>(Bytes::from(vec![b'a' + n; 4])), n + 1))
+    });
+    let req = Request::post("/api/office/to-pdf").body(Body::from_stream(slow)).unwrap();
+    let (status, _, body) = send(&s, req).await;
+    assert_eq!(status, StatusCode::OK, "{}", error_of(&body));
+    assert_eq!(body, b"aaaabbbbccccdddd");
+}
+
 /// No answer at all within the limit: 504, and the add-on is not marked as stopped.
 #[tokio::test]
 async fn no_answer_in_time_is_504() {
@@ -223,4 +241,160 @@ async fn oversized_upload_is_413() {
         .unwrap();
     let (status, _, _) = send(&s, req).await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+// --- Media add-on: background jobs ---
+
+const JOB: &str = "0123456789abcdef0123456789abcdef";
+
+/// A stand-in media worker that records each request's method and path.
+async fn fake_media() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use axum::extract::{OriginalUri, Request as AxRequest};
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let s = seen.clone();
+    let app = Router::new()
+        .route("/health", get(|| async { Json(json!({ "media": { "ops": ["video-trim"], "maxUploadMb": 10240, "running": 1, "queued": 2 } })) }))
+        .fallback(move |OriginalUri(uri): OriginalUri, req: AxRequest| {
+            let s = s.clone();
+            async move {
+                let method = req.method().clone();
+                let range = req.headers().get(header::RANGE).and_then(|v| v.to_str().ok()).map(String::from);
+                s.lock().unwrap().push(format!("{method} {}", uri.path()));
+                let path = uri.path().to_string();
+                if method == axum::http::Method::POST {
+                    return (StatusCode::ACCEPTED, Json(json!({ "id": JOB, "state": "queued" }))).into_response();
+                }
+                if method == axum::http::Method::DELETE {
+                    return StatusCode::NO_CONTENT.into_response();
+                }
+                if path.ends_with("/file") {
+                    if range.as_deref() == Some("bytes=0-9") {
+                        return (
+                            StatusCode::PARTIAL_CONTENT,
+                            [(header::CONTENT_RANGE, "bytes 0-9/100"), (header::ACCEPT_RANGES, "bytes")],
+                            "0123456789",
+                        )
+                            .into_response();
+                    }
+                    return "whole file".into_response();
+                }
+                Json(json!({ "jobs": [], "now": 1 })).into_response()
+            }
+        });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), seen)
+}
+
+use axum::response::IntoResponse;
+
+fn media_state(media_url: &str) -> app::State {
+    app::State::new(Config {
+        office_url: CLOSED.into(),
+        ocr_url: CLOSED.into(),
+        media_url: media_url.into(),
+        addon_limit_override: Some(Duration::from_secs(5)),
+        ..Config::default()
+    })
+}
+
+#[tokio::test]
+async fn media_start_forwards_and_returns_202() {
+    let (url, seen) = fake_media().await;
+    let s = media_state(&url);
+    let (status, _, body) = send(&s, upload("/api/media/video-trim", "clip")).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["id"], JOB);
+    assert_eq!(seen.lock().unwrap().as_slice(), ["POST /media/video-trim"]);
+}
+
+#[tokio::test]
+async fn media_limit_is_separate() {
+    let (url, seen) = fake_media().await;
+    let s = app::State::new(Config {
+        office_url: CLOSED.into(),
+        ocr_url: CLOSED.into(),
+        media_url: url,
+        max_upload_mb: 1,
+        media_max_upload_mb: 5,
+        addon_limit_override: Some(Duration::from_secs(5)),
+        ..Config::default()
+    });
+    let big = |path: &str| {
+        Request::post(path)
+            .header(header::CONTENT_TYPE, "multipart/form-data; boundary=B")
+            .header(header::CONTENT_LENGTH, (3 * 1024 * 1024).to_string())
+            .body(Body::from(vec![0u8; 3 * 1024 * 1024]))
+            .unwrap()
+    };
+    let (status, _, _) = send(&s, big("/api/media/video-trim")).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (status, _, _) = send(&s, big("/api/office/to-pdf")).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn media_job_get_delete_and_list_forward() {
+    let (url, seen) = fake_media().await;
+    let s = media_state(&url);
+    let (status, _, body) = send(&s, Request::get("/api/media/jobs").body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&body).contains("\"jobs\""));
+    let (status, _, _) = send(&s, Request::get(format!("/api/media/jobs/{JOB}")).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = send(&s, Request::delete(format!("/api/media/jobs/{JOB}")).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, body) = send(&s, Request::get(format!("/api/media/jobs/{JOB}/file")).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"whole file");
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        ["GET /media/jobs".to_string(), format!("GET /media/jobs/{JOB}"), format!("DELETE /media/jobs/{JOB}"), format!("GET /media/jobs/{JOB}/file")]
+    );
+}
+
+#[tokio::test]
+async fn range_passes_both_ways() {
+    let (url, _) = fake_media().await;
+    let s = media_state(&url);
+    let req = Request::get(format!("/api/media/jobs/{JOB}/file")).header(header::RANGE, "bytes=0-9").body(Body::empty()).unwrap();
+    let (status, headers, body) = send(&s, req).await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(headers[header::CONTENT_RANGE], "bytes 0-9/100");
+    assert_eq!(headers[header::ACCEPT_RANGES], "bytes");
+    assert_eq!(body, b"0123456789");
+}
+
+#[tokio::test]
+async fn bad_job_ids_never_reach_the_worker() {
+    let (url, seen) = fake_media().await;
+    let s = media_state(&url);
+    for path in ["/api/media/jobs/XYZ", "/api/media/jobs/..%2F..%2Fhealth", "/api/media/jobs/0123456789ABCDEF0123456789ABCDEF/file"] {
+        let (status, _, _) = send(&s, Request::get(path).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        let (status, _, _) = send(&s, Request::delete(path).body(Body::empty()).unwrap()).await;
+        assert!(status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED, "{path}: {status}");
+    }
+    assert!(seen.lock().unwrap().is_empty(), "{:?}", seen.lock().unwrap());
+}
+
+#[tokio::test]
+async fn health_lists_media() {
+    let s = media_state(CLOSED);
+    s.addons.check_once(&s.http, &s.config).await;
+    let (_, _, body) = send(&s, Request::get("/api/health").body(Body::empty()).unwrap()).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["addons"]["media"]["ready"], false);
+
+    let (url, _) = fake_media().await;
+    let s = media_state(&url);
+    s.addons.check_once(&s.http, &s.config).await;
+    let (_, _, body) = send(&s, Request::get("/api/health").body(Body::empty()).unwrap()).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["addons"]["media"]["ready"], true);
+    assert_eq!(json["addons"]["media"]["maxUploadMb"], 10240);
+    assert_eq!(json["addons"]["media"]["running"], 1);
 }

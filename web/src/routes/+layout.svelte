@@ -2,6 +2,7 @@
   import '../app.css';
   import { page } from '$app/state';
   import Search from '$lib/ui/Search.svelte';
+  import { addons, refreshAddons } from '$lib/addons.svelte';
 
   let { children } = $props();
 
@@ -31,6 +32,21 @@
   }
 
   const isHome = $derived(page.url.pathname === '/');
+
+  // The header's "Jobs" link shows when the media add-on is up, with a count while jobs are active.
+  $effect(() => {
+    void refreshAddons();
+    const every = setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshAddons();
+    }, 15_000);
+    return () => clearInterval(every);
+  });
+  const media = $derived(addons.status.media);
+  const activeJobs = $derived(media.running + media.queued);
+  // Built as a string: Svelte trims the space at the start of an {#if} block ("Jobs(1 running)").
+  const jobsCount = $derived(
+    media.running > 0 ? ` (${media.running} running)` : media.queued > 0 ? ` (${media.queued} waiting)` : '',
+  );
 </script>
 
 <header class="bar">
@@ -42,6 +58,11 @@
   </a>
   {#if !isHome}
     <div class="bar-search"><Search /></div>
+  {/if}
+  {#if media.ready}
+    <a class="jobs-link" href="/jobs" class:busy={activeJobs > 0} aria-current={page.url.pathname === '/jobs' ? 'page' : undefined}>
+      Jobs{jobsCount}
+    </a>
   {/if}
   <button type="button" class="quiet theme" onclick={cycleTheme} title="Theme: {theme}">
     <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"
@@ -90,8 +111,27 @@
     margin-left: auto;
   }
 
-  .bar-search + .theme {
+  .bar-search + .theme,
+  .jobs-link + .theme,
+  .bar-search + .jobs-link {
     margin-left: 0;
+  }
+
+  .jobs-link {
+    margin-left: auto;
+    white-space: nowrap;
+    color: var(--ink-soft);
+    text-decoration: none;
+    font-weight: 600;
+  }
+
+  .jobs-link:hover,
+  .jobs-link[aria-current='page'] {
+    color: var(--ink);
+  }
+
+  .jobs-link.busy {
+    color: var(--blue);
   }
 
   main {

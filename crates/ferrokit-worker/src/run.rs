@@ -41,10 +41,10 @@ pub async fn run(mut cmd: Command, limit: Duration) -> Result<Output, RunError> 
 }
 
 /// Kills a program's whole process group when dropped, unless the program finished.
-struct Group(Option<u32>);
+pub(crate) struct Group(pub(crate) Option<u32>);
 
 impl Group {
-    fn finished(mut self) {
+    pub(crate) fn finished(mut self) {
         self.0 = None;
     }
 }

@@ -24,6 +24,10 @@ chromiumoxide = "0.9"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 quick-xml = "0.38"
 mime_guess = "2"
+getrandom = "0.3"
+tokio-util = "0.7"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

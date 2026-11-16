@@ -1,11 +1,11 @@
 //! The Ferrokit add-on worker. One binary serves both add-on images; it turns on only the
-//! operations whose programs are installed, and the core forwards `/api/office/*` and
-//! `/api/ocr/*` here unchanged.
+//! operations whose programs are installed, and the core forwards `/api/office/*`,
+//! `/api/ocr/*` and `/api/media/*` here unchanged.
 
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -17,12 +17,16 @@ pub mod caps;
 pub mod chrome;
 pub mod egress;
 pub mod epub;
+pub mod ffmpeg;
+pub mod jobs;
 pub mod markdown;
+pub mod media;
 pub mod ocr;
 pub mod office;
 pub mod out;
 pub mod pdfa;
 pub mod print;
+pub mod progress;
 pub mod run;
 pub mod serve;
 
@@ -37,11 +41,13 @@ pub struct AppState {
     pub printer: Option<print::Printer>,
     /// Our bundled files (PDFA_def.ps, the LibreOffice profile).
     pub assets: std::path::PathBuf,
+    /// Background video and audio jobs (media image only).
+    pub media: Option<Arc<media::Media>>,
 }
 
 impl AppState {
     pub fn new(caps: Caps) -> Self {
-        Self { caps: Arc::new(caps), office: None, printer: None, assets: "/usr/local/share/ferrokit".into() }
+        Self { caps: Arc::new(caps), office: None, printer: None, assets: "/usr/local/share/ferrokit".into(), media: None }
     }
 
     pub fn with_assets(mut self, dir: std::path::PathBuf) -> Self {
@@ -54,6 +60,11 @@ impl AppState {
         self
     }
 
+    pub fn with_media(mut self, media: Arc<media::Media>) -> Self {
+        self.media = Some(media);
+        self
+    }
+
     pub fn with_office(mut self, pool: Arc<office::Pool>) -> Self {
         self.office = Some(pool);
         self
@@ -61,10 +72,17 @@ impl AppState {
 }
 
 pub fn router(state: AppState) -> Router {
+    // Media uploads have their own (bigger) limit; it wins over the general one set in main.
+    let media_limit = state.media.as_ref().map(|m| m.max_upload).unwrap_or(0);
+    let media_limit = usize::try_from(media_limit.saturating_add(1 << 20)).unwrap_or(usize::MAX);
     Router::new()
         .route("/health", get(health))
         .route("/office/{op}", post(office))
         .route("/ocr/{op}", post(ocr))
+        .route("/media/jobs", get(media::list))
+        .route("/media/jobs/{id}", get(media::get).delete(media::delete))
+        .route("/media/jobs/{id}/file", get(media::file))
+        .route("/media/{op}", post(media::start).layer(DefaultBodyLimit::max(media_limit)))
         .with_state(state)
 }
 
@@ -78,7 +96,24 @@ async fn health(State(s): State<AppState>) -> Json<serde_json::Value> {
             "warm": s.office.as_ref().map(|p| p.ready()),
         },
         "ocr": { "ops": s.caps.ocr_ops(), "languages": s.caps.languages },
+        "media": media_health(&s),
     }))
+}
+
+fn media_health(s: &AppState) -> serde_json::Value {
+    match &s.media {
+        Some(m) => {
+            let (running, queued) = m.store.counts();
+            json!({
+                "ops": s.caps.media_ops(),
+                "maxUploadMb": m.max_upload / (1024 * 1024),
+                "running": running,
+                "queued": queued,
+                "freeBytes": m.free_bytes(),
+            })
+        }
+        None => json!({ "ops": [] }),
+    }
 }
 
 /// 404 for an op nobody knows; 503 for one this image can't run.

@@ -15,15 +15,17 @@ pub const CHECK_EVERY: Duration = Duration::from_secs(15);
 pub enum Addon {
     Office,
     Ocr,
+    Media,
 }
 
 impl Addon {
-    pub const ALL: [Addon; 2] = [Addon::Office, Addon::Ocr];
+    pub const ALL: [Addon; 3] = [Addon::Office, Addon::Ocr, Addon::Media];
 
     pub fn name(self) -> &'static str {
         match self {
             Addon::Office => "office",
             Addon::Ocr => "ocr",
+            Addon::Media => "media",
         }
     }
 
@@ -31,6 +33,7 @@ impl Addon {
         match self {
             Addon::Office => "Office add-on",
             Addon::Ocr => "OCR add-on",
+            Addon::Media => "Media add-on",
         }
     }
 
@@ -38,13 +41,14 @@ impl Addon {
         format!("docker compose --profile {} up -d", self.name())
     }
 
-/// How long the worker may take to start answering: a backstop for a worker that never answers.
+    /// How long the worker may take to start answering: a backstop for a worker that never answers.
     /// The worker has its own, shorter limits (2 minutes per Office file, 30 minutes per OCR request)
     /// and sends a proper message when one is hit; a large Office batch can take longer than 2 minutes
-    /// in total, so the backstop is the same 30 minutes for both.
+    /// in total, so the backstop is the same 30 minutes for both. Media replies 202 as soon as an
+    /// upload is stored, so for media this only has to cover a very large upload.
     pub fn limit(self) -> Duration {
         match self {
-            Addon::Office | Addon::Ocr => Duration::from_secs(30 * 60 + 30),
+            Addon::Office | Addon::Ocr | Addon::Media => Duration::from_secs(30 * 60 + 30),
         }
     }
 
@@ -52,6 +56,15 @@ impl Addon {
         match self {
             Addon::Office => &config.office_url,
             Addon::Ocr => &config.ocr_url,
+            Addon::Media => &config.media_url,
+        }
+    }
+
+    /// The largest upload this add-on takes, in MB. Media has its own, bigger limit.
+    pub fn max_upload_mb(self, config: &Config) -> usize {
+        match self {
+            Addon::Media => config.media_max_upload_mb,
+            Addon::Office | Addon::Ocr => config.max_upload_mb,
         }
     }
 }
@@ -97,7 +110,11 @@ impl Registry {
 
     /// Ask every add-on for its `/health` once, all at the same time.
     pub async fn check_once(&self, client: &reqwest::Client, config: &Config) {
-        tokio::join!(self.check(client, config, Addon::Office), self.check(client, config, Addon::Ocr));
+        tokio::join!(
+            self.check(client, config, Addon::Office),
+            self.check(client, config, Addon::Ocr),
+            self.check(client, config, Addon::Media)
+        );
     }
 
     async fn check(&self, client: &reqwest::Client, config: &Config, addon: Addon) {

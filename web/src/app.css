@@ -303,6 +303,22 @@ button:disabled {
   flex: 1 1 160px;
 }
 
+/* A group of radio buttons with a heading. */
+fieldset.choice {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+fieldset.choice legend {
+  font-weight: 600;
+  padding: 0;
+  margin-bottom: 4px;
+}
+
 .cols-2 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
