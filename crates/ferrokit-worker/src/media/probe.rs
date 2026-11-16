@@ -61,10 +61,32 @@ pub struct Sub {
 /// ffmpeg would follow them, so they are never accepted as uploads.
 const POINTERS: &[&str] = &["hls", "applehttp", "dash", "concat", "sdp", "rtsp", "rtp", "tee", "ffconcat", "mpd"];
 
+/// The containers uploads may be: plain audio and video files that hold their own data. Anything
+/// else (playlists, manifests, image sequences, formats we haven't thought about) is refused, since
+/// some formats make ffmpeg open other files or addresses.
+const PLAIN_MEDIA: &[&str] = &[
+    "mov", "mp4", "m4a", "3gp", "3g2", "mj2", "matroska", "webm", "avi", "mpegts", "mpeg", "mpegvideo",
+    "flv", "asf", "mp3", "wav", "w64", "flac", "ogg", "aac", "aiff", "amr", "amrnb", "amrwb", "caf",
+    "ac3", "eac3", "dts", "dv", "mxf", "nut", "ape", "wv", "tta", "au", "h264", "hevc", "m4v",
+];
+
+/// What an uploaded subtitle file may be.
+const SUBTITLE_FILES: &[&str] = &["srt", "ass", "webvtt"];
+
 impl Probe {
     /// Whether this "file" is really a list of other files or addresses.
     pub fn is_pointer(&self) -> bool {
         self.formats.iter().any(|f| POINTERS.contains(&f.as_str()))
+    }
+
+    /// Whether this is a plain audio or video file (every name ffprobe gave is on the allowlist).
+    pub fn is_plain_media(&self) -> bool {
+        !self.formats.is_empty() && self.formats.iter().all(|f| PLAIN_MEDIA.contains(&f.as_str()))
+    }
+
+    /// Whether this is really an SRT, ASS/SSA or WebVTT file.
+    pub fn is_subtitle_file(&self) -> bool {
+        !self.formats.is_empty() && self.formats.iter().all(|f| SUBTITLE_FILES.contains(&f.as_str()))
     }
 }
 
@@ -233,5 +255,31 @@ mod tests {
     fn playlists_are_pointers() {
         let p = parse(r#"{"streams":[],"format":{"format_name":"hls"}}"#).unwrap();
         assert!(p.is_pointer());
+    }
+
+    fn format(name: &str) -> Probe {
+        parse(&format!(r#"{{"streams":[],"format":{{"format_name":"{name}"}}}}"#)).unwrap()
+    }
+
+    #[test]
+    fn only_plain_media_containers_are_accepted() {
+        // An allowlist, not a list of known playlist types: anything ffmpeg might follow elsewhere
+        // (DASH manifests, IMF, playlists, image sequences, unknown formats) is refused.
+        for ok in ["mov,mp4,m4a,3gp,3g2,mj2", "matroska,webm", "avi", "mpegts", "mp3", "wav", "flac", "ogg", "asf", "flv", "mpeg", "aac", "aiff"] {
+            assert!(format(ok).is_plain_media(), "{ok}");
+        }
+        for bad in ["hls", "webm_dash_manifest", "imf", "concat", "dash", "image2", "lavfi", "", "mov,hls"] {
+            assert!(!format(bad).is_plain_media(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn subtitle_files_must_be_subtitles() {
+        for ok in ["srt", "ass", "webvtt"] {
+            assert!(format(ok).is_subtitle_file(), "{ok}");
+        }
+        for bad in ["hls", "concat", "mov,mp4,m4a,3gp,3g2,mj2", "", "tee"] {
+            assert!(!format(bad).is_subtitle_file(), "{bad}");
+        }
     }
 }

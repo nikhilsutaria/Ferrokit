@@ -228,6 +228,14 @@ check "a Range download returns 206"               t_range
 check "a non-ASCII file name round-trips"          t_unicode
 check "an audio file sent to a video tool is 422"  t_wrong_stream
 check "a playlist disguised as AVI can't read files" t_playlist
+# ffmpeg's subtitles filter opens the subtitle itself, so a playlist named .srt must be refused at upload.
+t_sub_playlist() {
+  cp evil.avi evil.srt
+  local code; code=$(curl -s -o evilsub.json -w '%{http_code}' -F "file=@noaudio.mp4" -F "subtitle=@evil.srt" -F 'options={"mode":"burn"}' "$FERROKIT/api/media/subtitles")
+  cat evilsub.json; echo
+  [ "$code" = 422 ]
+}
+check "a playlist disguised as SRT is refused"     t_sub_playlist
 check "the media add-on can't reach the internet"  t_no_internet
 
 # The disk-full guard (507) is covered by the worker's tests (disk_guard_507) rather than by filling a disk.

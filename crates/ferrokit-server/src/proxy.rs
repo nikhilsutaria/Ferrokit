@@ -75,6 +75,9 @@ async fn start(state: &State, addon: Addon, op: &str, req: Request) -> Result<Re
 
 /// Send `req` to `{addon url}/{addon}/{path}` and stream the reply back. `timeout` covers the wait for
 /// the worker to start answering, not the download.
+/// How long an upload may go without sending a byte before it's given up.
+const UPLOAD_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+
 pub async fn forward(
     state: &State,
     addon: Addon,
@@ -108,7 +111,17 @@ pub async fn forward(
             }
             std::task::Poll::<Option<Result<axum::body::Bytes, axum::Error>>>::Ready(None)
         });
-        let body = reqwest::Body::wrap_stream(req.into_body().into_data_stream().chain(end));
+        // With no overall limit on the upload, a client that stops sending would hold its add-on job
+        // slot for ever: give up after a minute without a byte (shorter when the limit is shorter).
+        let idle = timeout.min(UPLOAD_IDLE);
+        let chunks = futures_util::stream::unfold(req.into_body().into_data_stream(), move |mut body| async move {
+            match tokio::time::timeout(idle, body.next()).await {
+                Ok(Some(chunk)) => Some((chunk, body)),
+                Ok(None) => None,
+                Err(_) => Some((Err(axum::Error::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "the upload stalled"))), body)),
+            }
+        });
+        let body = reqwest::Body::wrap_stream(chunks.chain(end));
         state.http.request(method, &url).headers(out).body(body)
     } else {
         state.http.request(method, &url).headers(out)

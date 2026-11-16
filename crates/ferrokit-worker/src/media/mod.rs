@@ -133,11 +133,13 @@ async fn save(mut field: axum::extract::multipart::Field<'_>, path: &Path, limit
 struct Upload {
     inputs: Vec<(String, String, u64)>, // (fixed file, original name, bytes)
     subtitle: Option<String>,
+    /// The subtitle file's original name, for messages.
+    subtitle_name: String,
     options: Value,
 }
 
 async fn receive(op: &str, dir: &Path, mut form: Multipart, limit: u64) -> Result<Upload, ApiError> {
-    let mut up = Upload { inputs: Vec::new(), subtitle: None, options: Value::Null };
+    let mut up = Upload { inputs: Vec::new(), subtitle: None, subtitle_name: String::new(), options: Value::Null };
     let max_files = if plan::takes_many(op) { MAX_FILES } else { 1 };
     let mut total = 0u64;
     while let Some(field) = form.next_field().await.map_err(multipart_error)? {
@@ -165,6 +167,7 @@ async fn receive(op: &str, dir: &Path, mut form: Multipart, limit: u64) -> Resul
                 let fixed = format!("sub.{ext}");
                 total += save(field, &dir.join(&fixed), limit.saturating_sub(total)).await?;
                 up.subtitle = Some(fixed);
+                up.subtitle_name = name;
             }
             "options" => {
                 // Read in pieces with a small cap: this part goes to memory, not disk.
@@ -224,12 +227,25 @@ async fn prepare(m: &Media, op: &str, dir: &Path, form: Multipart) -> Result<(Ve
         let probe = probe::probe(&m.programs.ffprobe, dir, file)
             .await
             .map_err(|_| ApiError::unprocessable(format!("{name} isn't a video or audio file ffmpeg can read.")))?;
-        if probe.is_pointer() {
-            return Err(ApiError::unprocessable(format!(
-                "{name} tries to load other files or web addresses, which isn't allowed."
-            )));
+        if !probe.is_plain_media() {
+            return Err(ApiError::unprocessable(if probe.is_pointer() {
+                format!("{name} tries to load other files or web addresses, which isn't allowed.")
+            } else {
+                format!("{name} isn't a video or audio file the media tools take.")
+            }));
         }
         inputs.push(Input { file: file.clone(), name: name.clone(), probe });
+    }
+    // ffmpeg's subtitles filter opens this file itself, outside the per-input whitelist, so it must
+    // really be a subtitle file and not, say, a playlist named .srt.
+    if let Some(sub) = &up.subtitle {
+        let ok = probe::probe(&m.programs.ffprobe, dir, sub).await.is_ok_and(|p| p.is_subtitle_file());
+        if !ok {
+            return Err(ApiError::unprocessable(format!(
+                "{} isn't a subtitle file ffmpeg can read. Use .srt, .ass or .vtt.",
+                up.subtitle_name
+            )));
+        }
     }
     plan::check_streams(op, &inputs)?;
     let plan = plan::plan(op, up.options, &inputs, up.subtitle.as_deref())?;

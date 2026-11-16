@@ -24,6 +24,8 @@ for a; do f="$a"; done
 case "$f" in
   *.mp4|*.mkv|*.mov) echo '{"streams":[{"codec_type":"video","codec_name":"h264","width":1280,"height":720,"avg_frame_rate":"30/1"},{"codec_type":"audio","codec_name":"aac","channels":2}],"format":{"format_name":"mov,mp4","duration":"10.0"}}' ;;
   *.mp3) echo '{"streams":[{"codec_type":"audio","codec_name":"mp3","channels":2}],"format":{"format_name":"mp3","duration":"6.0"}}' ;;
+  */sub.srt|sub.srt) echo '{"streams":[{"index":0,"codec_type":"subtitle","codec_name":"subrip"}],"format":{"format_name":"srt"}}' ;;
+  */sub.vtt|sub.vtt) echo '{"streams":[{"codec_type":"video","codec_name":"h264","width":10,"height":10}],"format":{"format_name":"hls","duration":"1.0"}}' ;;
   *.m3u8) echo '{"streams":[{"codec_type":"video","codec_name":"h264","width":10,"height":10}],"format":{"format_name":"hls","duration":"1.0"}}' ;;
   *) echo "Invalid data found when processing input" >&2; exit 1 ;;
 esac
@@ -214,6 +216,35 @@ async fn non_ascii_name_round_trips() {
     let (_, headers, _) = call(&f.app, Request::get(format!("/media/jobs/{id}/file")).body(Body::empty()).unwrap()).await;
     let cd = headers[header::CONTENT_DISPOSITION].to_str().unwrap();
     assert!(cd.contains("filename*=UTF-8''%C5%8Ctautahi%20caf%C3%A9-muted.mp4"), "{cd}");
+}
+
+/// A subtitle upload is opened by ffmpeg's subtitles filter, outside the per-input whitelist, so it
+/// is probed too and must really be SRT, ASS or WebVTT.
+#[tokio::test]
+async fn subtitle_uploads_must_be_subtitles() {
+    let f = fixture();
+    let burn = |sub_name: &str| {
+        let b = "XBOUNDARYX";
+        let mut body = Vec::new();
+        let part = |name: &str, file: Option<&str>, data: &str| {
+            let file = file.map(|f| format!("; filename=\"{f}\"")).unwrap_or_default();
+            format!("--{b}\r\nContent-Disposition: form-data; name=\"{name}\"{file}\r\n\r\n{data}\r\n")
+        };
+        body.extend_from_slice(part("file", Some("clip.mkv"), "video").as_bytes());
+        body.extend_from_slice(part("subtitle", Some(sub_name), "#EXTM3U").as_bytes());
+        body.extend_from_slice(part("options", None, r#"{"mode":"burn"}"#).as_bytes());
+        body.extend_from_slice(format!("--{b}--\r\n").as_bytes());
+        Request::post("/media/subtitles")
+            .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={b}"))
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let (status, _, body) = call(&f.app, burn("evil.vtt")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{}", String::from_utf8_lossy(&body));
+    assert!(String::from_utf8_lossy(&body).contains("evil.vtt"), "{}", String::from_utf8_lossy(&body));
+    assert_eq!(std::fs::read_dir(&f.jobs).unwrap().count(), 0, "nothing is left behind");
+    let (status, _, body) = call(&f.app, burn("words.srt")).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{}", String::from_utf8_lossy(&body));
 }
 
 #[tokio::test]

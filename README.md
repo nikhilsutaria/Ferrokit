@@ -78,7 +78,9 @@ everyone on your LAN (there are no accounts), so anyone can see, download or can
   responsive. As a guide, compressing a 60-second 1080p clip to 480p took about 14 s, upload included,
   on a desktop PC.
 - The add-on sits on an internal Docker network with no internet access, and ffmpeg may only read the
-  uploaded files: a playlist or other file that points elsewhere is refused.
+  uploaded files. Only plain audio and video formats are accepted, and a subtitle file must really be
+  SRT, ASS or WebVTT, so a playlist or other file that points elsewhere is refused.
+- An upload that sends nothing for a minute is given up.
 
 Settings on the `ferrokit-media` service:
 

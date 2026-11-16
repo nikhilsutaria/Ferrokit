@@ -100,6 +100,25 @@ async fn slow_upload_is_not_cut_off() {
     assert_eq!(body, b"aaaabbbbccccdddd");
 }
 
+/// An upload that stops sending is given up, so it can't hold an add-on job slot for ever. (The
+/// idle limit is 60 s; the test override shortens it with the rest.)
+#[tokio::test]
+async fn stalled_upload_is_given_up() {
+    let s = state_with(&fake_worker().await, Duration::from_secs(1));
+    s.addons.check_once(&s.http, &s.config).await;
+    let stalled = futures_util::stream::unfold(0u8, |n| async move {
+        if n > 0 {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+        Some((Ok::<_, std::io::Error>(Bytes::from_static(b"abcd")), n + 1))
+    });
+    let req = Request::post("/api/office/to-pdf").body(Body::from_stream(stalled)).unwrap();
+    let res = tokio::time::timeout(Duration::from_secs(5), send(&s, req)).await;
+    let (status, _, _) = res.expect("a stalled upload must not hang the request");
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(s.addons.snapshot()["office"]["ready"], true);
+}
+
 /// No answer at all within the limit: 504, and the add-on is not marked as stopped.
 #[tokio::test]
 async fn no_answer_in_time_is_504() {
