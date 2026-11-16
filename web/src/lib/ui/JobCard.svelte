@@ -32,7 +32,7 @@
     busy = true;
     error = null;
     try {
-      await removeJob(j.id);
+      await removeJob(j.id, j.addon);
       // A cancelled job stays listed (as cancelled) until dismissed; a finished one goes now.
       if (!active) onremoved?.();
     } catch (e) {
@@ -81,14 +81,14 @@
     {:else if j.state === 'done' && j.result}
       {#if kind === 'video'}
         <!-- svelte-ignore a11y_media_has_caption -->
-        <video class="preview" src={fileUrl(j.id)} controls preload="metadata"></video>
+        <video class="preview" src={fileUrl(j.id, j.addon)} controls preload="metadata"></video>
       {:else if kind === 'audio'}
-        <audio class="preview" src={fileUrl(j.id)} controls preload="metadata"></audio>
+        <audio class="preview" src={fileUrl(j.id, j.addon)} controls preload="metadata"></audio>
       {:else if kind === 'image'}
-        <img class="preview" src={fileUrl(j.id)} alt="Result preview" />
+        <img class="preview" src={fileUrl(j.id, j.addon)} alt="Result preview" />
       {/if}
       <div class="done">
-        <a class="button primary" href={fileUrl(j.id)} download={j.result.name}>Download</a>
+        <a class="button primary" href={fileUrl(j.id, j.addon)} download={j.result.name}>Download</a>
         <span><strong>{j.result.name}</strong> <span class="hint">{formatBytes(j.result.bytes)}{size && j.inputs.length === 1 && kind === 'video' ? ` (was ${formatBytes(size)})` : ''}</span></span>
         <span class="hint">{expiresIn(j, now)}</span>
       </div>

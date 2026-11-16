@@ -328,3 +328,23 @@ async fn view_is_camel_case_json() {
     assert!(json.get("place").is_some_and(|p| p.is_null()));
     assert_eq!(json["result"]["mime"], "text/plain");
 }
+
+#[tokio::test]
+async fn an_unusable_folder_is_an_error_not_full() {
+    let dir = tempfile::tempdir().unwrap();
+    // A file where the folder should be: start can't use it.
+    let file = dir.path().join("jobs");
+    std::fs::write(&file, b"x").unwrap();
+    assert!(Store::start(settings(file)).is_err());
+
+    // A folder that breaks later: new jobs say why, instead of "full".
+    let jobs = dir.path().join("jobs2");
+    let store = Store::start(settings(jobs.clone())).unwrap();
+    std::fs::remove_dir_all(&jobs).unwrap();
+    std::fs::write(&jobs, b"x").unwrap();
+    match store.new_job("video-mute", Lane::Video) {
+        Err(ferrokit_worker::jobs::NewJobError::Disk(_)) => {}
+        Err(e) => panic!("wrong error: {e:?}"),
+        Ok(_) => panic!("a job folder was made inside a file"),
+    }
+}

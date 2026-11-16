@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { addons, isReady, parseAddons, refreshAddons, startCommand } from './addons.svelte';
+import { addons, isReady, jobAddons, parseAddons, refreshAddons, startCommand } from './addons.svelte';
 
 describe('add-on status', () => {
   it('reads the core health report', () => {
@@ -56,5 +56,14 @@ describe('add-on status', () => {
       await refreshAddons(true);
       expect(addons.status.media.ready).toBe(false);
     });
+  });
+
+  it('knows which running add-ons have background jobs', () => {
+    const health = (media: boolean, ocrOps: string[]) =>
+      parseAddons({ addons: { media: { ready: media, ops: ['video-trim'] }, ocr: { ready: true, ops: ocrOps } } });
+    expect(jobAddons(health(true, ['pdf', 'image', 'pdf-job']))).toEqual(['media', 'ocr']);
+    // An older OCR image without jobs, and a stopped media add-on.
+    expect(jobAddons(health(false, ['pdf', 'image']))).toEqual([]);
+    expect(jobAddons(health(false, ['pdf-job']))).toEqual(['ocr']);
   });
 });

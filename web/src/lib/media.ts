@@ -1,11 +1,17 @@
-// Background media jobs on the Media add-on: start one (with upload progress), follow it, download it.
+// Background jobs on the Media add-on (video and audio) and the OCR add-on ("Make PDF searchable"):
+// start one (with upload progress), follow it, download it.
 
 import { ApiError } from './api';
 
 export type JobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 
+/** The add-ons that run background jobs. */
+export type JobAddon = 'media' | 'ocr';
+
 export interface Job {
   id: string;
+  /** Which add-on runs it (and so where to ask about it). */
+  addon: JobAddon;
   tool: string;
   inputs: { name: string; bytes: number }[];
   state: JobState;
@@ -29,7 +35,7 @@ const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFi
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 
 /** A job from the server, or null when it doesn't look like one. */
-export function parseJob(v: unknown): Job | null {
+export function parseJob(v: unknown, addon: JobAddon = 'media'): Job | null {
   if (!v || typeof v !== 'object') return null;
   const o = v as Record<string, unknown>;
   const id = str(o.id);
@@ -47,6 +53,7 @@ export function parseJob(v: unknown): Job | null {
     r && str(r.name) !== null ? { name: str(r.name)!, bytes: num(r.bytes) ?? 0, mime: str(r.mime) ?? 'application/octet-stream' } : null;
   return {
     id,
+    addon,
     tool: str(o.tool) ?? '',
     inputs,
     state,
@@ -64,9 +71,9 @@ export function parseJob(v: unknown): Job | null {
 }
 
 /** The `{jobs: [...]}` list reply; entries that don't look like jobs are skipped. */
-export function parseJobs(v: unknown): Job[] {
+export function parseJobs(v: unknown, addon: JobAddon = 'media'): Job[] {
   const list = v && typeof v === 'object' ? (v as Record<string, unknown>).jobs : null;
-  return Array.isArray(list) ? list.map(parseJob).filter((j): j is Job => j !== null) : [];
+  return Array.isArray(list) ? list.map((j) => parseJob(j, addon)).filter((j): j is Job => j !== null) : [];
 }
 
 /** `83`, `1:23`, `1:23.5` or `1:02:03.25` → seconds; null for anything else. */
@@ -107,7 +114,7 @@ export function expiresIn(job: Job, nowMs: number): string {
   return mins >= 1 ? `Deleted in ${mins} min` : 'Deleted in less than a minute';
 }
 
-export const fileUrl = (id: string) => `/api/media/jobs/${id}/file`;
+export const fileUrl = (id: string, addon: JobAddon) => `/api/${addon}/jobs/${id}/file`;
 
 function errorFrom(status: number, text: string): ApiError {
   try {
@@ -121,16 +128,17 @@ function errorFrom(status: number, text: string): ApiError {
 }
 
 /**
- * Upload files and start a media job. `onUpload(sent, total)` reports the upload as it goes
- * (fetch can't). `done` resolves with the queued job.
+ * Upload files and start a job (`POST /api/{addon}/{op}`). `onUpload(sent, total)` reports the upload
+ * as it goes (fetch can't). `done` resolves with the queued job.
  */
 export function startJob(
   op: string,
   files: File[],
   options: object,
-  extras: { subtitle?: File | null } = {},
+  extras: { subtitle?: File | null; addon?: JobAddon } = {},
   onUpload?: (sent: number, total: number) => void,
 ): { done: Promise<Job>; abort: () => void } {
+  const addon = extras.addon ?? 'media';
   const form = new FormData();
   for (const f of files) form.append('file', f, f.name);
   if (extras.subtitle) form.append('subtitle', extras.subtitle, extras.subtitle.name);
@@ -147,7 +155,7 @@ export function startJob(
       if (xhr.status === 202 || xhr.status === 200) {
         let job: Job | null = null;
         try {
-          job = parseJob(JSON.parse(xhr.responseText));
+          job = parseJob(JSON.parse(xhr.responseText), addon);
         } catch {
           /* fall through */
         }
@@ -160,7 +168,7 @@ export function startJob(
     xhr.onerror = () => rej(new ApiError('Could not reach the Ferrokit server. Check it is running.'));
     xhr.onabort = () => rej(new DOMException('Upload cancelled', 'AbortError'));
   });
-  xhr.open('POST', `/api/media/${op}`);
+  xhr.open('POST', `/api/${addon}/${op}`);
   xhr.send(form);
   return {
     done,
@@ -172,25 +180,40 @@ export function startJob(
 }
 
 /** One job, or 'gone' when the server no longer has it (expired, dismissed, or the add-on restarted). */
-export async function getJob(id: string): Promise<Job | 'gone'> {
-  const res = await fetch(`/api/media/jobs/${id}`, { cache: 'no-store' });
+export async function getJob(id: string, addon: JobAddon = 'media'): Promise<Job | 'gone'> {
+  const res = await fetch(`/api/${addon}/jobs/${id}`, { cache: 'no-store' });
   if (res.status === 404) return 'gone';
   if (!res.ok) throw errorFrom(res.status, await res.text());
-  const job = parseJob(await res.json());
+  const job = parseJob(await res.json(), addon);
   if (!job) throw new ApiError('The server sent back something unexpected.');
   return job;
 }
 
-export async function listJobs(): Promise<{ jobs: Job[]; now: number }> {
-  const res = await fetch('/api/media/jobs', { cache: 'no-store' });
+async function listOne(addon: JobAddon): Promise<{ jobs: Job[]; now: number }> {
+  const res = await fetch(`/api/${addon}/jobs`, { cache: 'no-store' });
   if (!res.ok) throw errorFrom(res.status, await res.text());
   const body = await res.json();
-  return { jobs: parseJobs(body), now: typeof body?.now === 'number' ? body.now : Date.now() };
+  return { jobs: parseJobs(body, addon), now: typeof body?.now === 'number' ? body.now : Date.now() };
+}
+
+/**
+ * Every job on the given add-ons, newest first. An add-on that doesn't answer is left out; only if
+ * none answers is it an error.
+ */
+export async function listJobs(addons: JobAddon[] = ['media']): Promise<{ jobs: Job[]; now: number }> {
+  const replies = await Promise.allSettled(addons.map(listOne));
+  const ok = replies.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+  if (!ok.length && addons.length) {
+    const first = replies.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    throw first?.reason ?? new ApiError('No add-on answered.');
+  }
+  const jobs = ok.flatMap((r) => r.jobs).sort((a, b) => b.createdAt - a.createdAt);
+  return { jobs, now: ok[0]?.now ?? Date.now() };
 }
 
 /** Cancel a waiting or running job, or dismiss a finished one. */
-export async function removeJob(id: string): Promise<void> {
-  const res = await fetch(`/api/media/jobs/${id}`, { method: 'DELETE' });
+export async function removeJob(id: string, addon: JobAddon = 'media'): Promise<void> {
+  const res = await fetch(`/api/${addon}/jobs/${id}`, { method: 'DELETE' });
   if (!res.ok && res.status !== 404) throw errorFrom(res.status, await res.text());
 }
 

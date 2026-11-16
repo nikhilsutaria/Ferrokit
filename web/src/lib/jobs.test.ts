@@ -81,4 +81,15 @@ describe('following a job', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(seen).toEqual(['done']);
   });
+
+  it('follows an OCR job at its own address', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(async (_url: string) => new Response(JSON.stringify(job('done')), { status: 200 }));
+    vi.stubGlobal('fetch', fetch);
+    const seen: string[] = [];
+    follow(ID, (j) => seen.push(j === 'gone' ? 'gone' : `${j.addon} ${j.state}`), 'ocr');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetch.mock.calls[0][0]).toBe(`/api/ocr/jobs/${ID}`);
+    expect(seen).toEqual(['ocr done']);
+  });
 });

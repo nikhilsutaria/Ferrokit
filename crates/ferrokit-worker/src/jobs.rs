@@ -117,9 +117,15 @@ pub struct NewJob {
     pub dir: PathBuf,
 }
 
-/// Every listed job is still running or waiting, so there is no room for another.
+/// Why a new job couldn't be made.
 #[derive(Debug)]
-pub struct Full;
+pub enum NewJobError {
+    /// Every slot holds a job that is waiting or running.
+    Full,
+    /// The jobs folder can't be written (a missing or read-only volume, a full disk).
+    Disk(std::io::Error),
+}
+
 
 /// One job as the API shows it.
 #[derive(Debug, Clone, Serialize)]
@@ -227,6 +233,11 @@ impl Store {
             }
         }
         std::fs::create_dir_all(&settings.dir)?;
+        // The folder may exist but not be writable (a read-only root without the volume): find out
+        // now, not on the first upload.
+        let check = settings.dir.join(".write-check");
+        let _ = std::fs::remove_dir(&check);
+        std::fs::create_dir(&check).and_then(|_| std::fs::remove_dir(&check))?;
         let store = Store { inner: Arc::new(Mutex::new(Table::default())), settings: Arc::new(settings) };
         let weak = Arc::downgrade(&store.inner);
         let settings = store.settings.clone();
@@ -246,7 +257,7 @@ impl Store {
     }
 
     /// Make a job and its folder. It isn't listed until [`Store::submit`].
-    pub fn new_job(&self, tool: &str, lane: Lane) -> Result<NewJob, Full> {
+    pub fn new_job(&self, tool: &str, lane: Lane) -> Result<NewJob, NewJobError> {
         self.sweep();
         let mut t = self.inner.lock().expect("job table");
         if t.jobs.len() >= self.settings.max_jobs {
@@ -256,14 +267,14 @@ impl Store {
                 .filter(|(_, j)| j.state.finished())
                 .min_by_key(|(_, j)| (j.finished_at, j.seq))
                 .map(|(id, _)| id.clone());
-            let Some(oldest) = oldest else { return Err(Full) };
+            let Some(oldest) = oldest else { return Err(NewJobError::Full) };
             t.jobs.remove(&oldest);
             remove_dir(&self.dir_of(&oldest));
         }
         let id = new_id();
         let dir = self.dir_of(&id);
-        if std::fs::create_dir_all(&dir).is_err() {
-            return Err(Full);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return Err(NewJobError::Disk(e));
         }
         t.seq += 1;
         let seq = t.seq;

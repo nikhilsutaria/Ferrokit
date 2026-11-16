@@ -21,10 +21,12 @@ RUN apt-get update \
       ocrmypdf tesseract-ocr-all unpaper pngquant qpdf \
       tini wget \
  && rm -rf /var/lib/apt/lists/* \
- && useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin ferrokit
+ && useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin ferrokit  && mkdir /jobs && chown 10001 /jobs
 COPY --from=worker /ferrokit-worker /usr/local/bin/ferrokit-worker
+# Reports OCRmyPDF's progress to the worker, for "Make PDF searchable" jobs.
+COPY addons/ocr/ferrokit_progress.py /usr/local/share/ferrokit/ferrokit_progress.py
 USER ferrokit
-ENV TMPDIR=/tmp HOME=/tmp FERROKIT_WORKER_PORT=8090
+ENV TMPDIR=/tmp HOME=/tmp FERROKIT_WORKER_PORT=8090 FERROKIT_OCR_DIR=/jobs
 EXPOSE 8090
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
   CMD wget -qO- http://127.0.0.1:8090/health >/dev/null || exit 1

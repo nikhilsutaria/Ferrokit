@@ -41,7 +41,7 @@ pub enum OcrOutput {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct PdfOptions {
     pub languages: Vec<String>,
     pub mode: Mode,

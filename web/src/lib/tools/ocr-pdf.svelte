@@ -1,7 +1,13 @@
 <script lang="ts">
+  import MediaJob from '$lib/ui/MediaJob.svelte';
   import PdfJob from '$lib/ui/PdfJob.svelte';
   import LanguagePicker from '$lib/ui/LanguagePicker.svelte';
-  import { addons } from '$lib/addons.svelte';
+  import { addons, jobAddons } from '$lib/addons.svelte';
+
+  // A background job when the OCR add-on offers them; an older OCR image (or one whose jobs folder
+  // can't be used) still makes PDFs searchable in one request.
+  const asJob = $derived(jobAddons().includes('ocr'));
+  const options = () => ({ languages, mode, deskew, rotate, clean, output, text });
 
   let languages = $state(['eng']);
   let mode = $state<'skip' | 'redo' | 'force'>('skip');
@@ -18,15 +24,7 @@
   }
 </script>
 
-<PdfJob
-  api="ocr"
-  op="pdf"
-  action="Make searchable"
-  dropLabel="Drop a scanned PDF here"
-  options={() => ({ languages, mode, deskew, rotate, clean, output, text })}
-  {validate}
->
-  {#snippet fields()}
+{#snippet fields()}
     <LanguagePicker available={addons.status.ocr.languages} bind:selected={languages} />
 
     <fieldset class="modes">
@@ -55,10 +53,27 @@
 
     <p class="hint">
       The pages keep their look; an invisible text layer is added so you can search, select and copy. “Clean up” only
-      affects what is read, not how the pages look. Big scans can take a few minutes; keep this tab open.
+      affects what is read, not how the pages look. Big scans can take a few minutes{asJob
+        ? ': you can close the tab and collect the result from the Jobs page.'
+        : '; keep this tab open.'}
     </p>
-  {/snippet}
-</PdfJob>
+{/snippet}
+
+{#if asJob}
+  <MediaJob
+    addon="ocr"
+    op="pdf-job"
+    many="one"
+    accept=".pdf,application/pdf"
+    action="Make searchable"
+    dropLabel="Drop a scanned PDF here"
+    {options}
+    {validate}
+    {fields}
+  />
+{:else}
+  <PdfJob api="ocr" op="pdf" action="Make searchable" dropLabel="Drop a scanned PDF here" {options} {validate} {fields} />
+{/if}
 
 <style>
   .modes {

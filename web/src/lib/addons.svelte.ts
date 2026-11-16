@@ -63,6 +63,14 @@ export function refreshAddons(now = false): Promise<void> {
   return inflight;
 }
 
+/** The running add-ons that run background jobs (the Jobs page lists theirs). */
+export function jobAddons(status: Record<CheckedAddon, AddonInfo> = addons.status): ('media' | 'ocr')[] {
+  const list: ('media' | 'ocr')[] = [];
+  if (status.media.ready) list.push('media');
+  if (status.ocr.ready && status.ocr.ops.includes('pdf-job')) list.push('ocr');
+  return list;
+}
+
 export function isReady(addon: Addon | undefined): boolean {
   return addon === 'office' || addon === 'ocr' || addon === 'media' ? addons.status[addon].ready : false;
 }

@@ -62,10 +62,10 @@ address, not `localhost`. It can print pages on your home network; that's intend
 loads goes through a small proxy in the add-on that refuses the add-on's own addresses (loopback,
 link-local), so a printed page can't reach its internal services.
 
-#### Media jobs
+#### Background jobs
 
-Video and audio work runs as background jobs. The upload shows its own progress, then the job shows a
-percentage and the time left. You can close the tab: the **Jobs** link in the header lists every job,
+Video and audio work, and *Make PDF searchable* in the OCR add-on, run as background jobs. The upload
+shows its own progress, then the job shows a percentage and the time left. You can close the tab: the **Jobs** link in the header lists every job,
 and results are kept for **1 hour** after they finish, then deleted. The Jobs list is shared by
 everyone on your LAN (there are no accounts), so anyone can see, download or cancel any job.
 
@@ -92,6 +92,11 @@ Settings on the `ferrokit-media` service:
 | `FERROKIT_MEDIA_KEEP_MIN` | `60` | Minutes a finished result is kept |
 | `FERROKIT_MEDIA_JOB_LIMIT_MIN` | `180` | Longest one job may run before it's stopped |
 | `FERROKIT_MEDIA_DIR` | `/jobs` | Where jobs and results are stored (the volume) |
+
+*Make PDF searchable* jobs run one at a time (OCRmyPDF already uses every core), and their results wait
+on the `ferrokit-ocr-jobs` volume. Settings on the `ferrokit-ocr` service: `FERROKIT_OCR_KEEP_MIN`
+(60), `FERROKIT_OCR_JOB_LIMIT_MIN` (180) and `FERROKIT_OCR_DIR` (`/jobs`). Its uploads keep the
+OCR add-on's 1 GB limit. *Text from an image* stays instant: it shows the text right on the page.
 
 ## Develop
 
@@ -246,7 +251,13 @@ as `Latin`); `/api/health` lists what's installed. The default is `["eng"]`.
 | op | options |
 |---|---|
 | `pdf` | one PDF; `languages`, `mode` (`skip`/`redo`/`force`), `deskew`, `rotate` (default true), `clean`, `output` (`pdf`/`pdfa`), `text` (also return a .txt; the reply is then a ZIP) |
+| `pdf-job` | the same as `pdf`, as a background job: answers `202` with a job (see the Media add-on below for the job's shape) |
 | `image` | images; `languages`, `output` (`text`: one .txt / `pdf`: searchable PDFs) |
+
+Unknown option names are refused. `pdf-job`'s jobs are at `GET /api/ocr/jobs`, `GET`/`DELETE
+/api/ocr/jobs/{id}` and `GET /api/ocr/jobs/{id}/file`, exactly like the media ones; its `tool` is
+`ocr-pdf`. Bad options, a missing language, a file that isn't a PDF and a password-protected PDF are
+refused at once (422); "already has text" only shows up while it runs, as a failed job.
 
 ### Media add-on
 

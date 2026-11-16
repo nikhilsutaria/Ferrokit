@@ -19,9 +19,11 @@ pub mod egress;
 pub mod epub;
 pub mod ffmpeg;
 pub mod jobs;
+pub mod jobs_http;
 pub mod markdown;
 pub mod media;
 pub mod ocr;
+pub mod ocrjob;
 pub mod office;
 pub mod out;
 pub mod pdfa;
@@ -43,11 +45,13 @@ pub struct AppState {
     pub assets: std::path::PathBuf,
     /// Background video and audio jobs (media image only).
     pub media: Option<Arc<media::Media>>,
+    /// Background "Make PDF searchable" jobs (OCR image only).
+    pub ocr_jobs: Option<Arc<ocrjob::OcrJobs>>,
 }
 
 impl AppState {
     pub fn new(caps: Caps) -> Self {
-        Self { caps: Arc::new(caps), office: None, printer: None, assets: "/usr/local/share/ferrokit".into(), media: None }
+        Self { caps: Arc::new(caps), office: None, printer: None, assets: "/usr/local/share/ferrokit".into(), media: None, ocr_jobs: None }
     }
 
     pub fn with_assets(mut self, dir: std::path::PathBuf) -> Self {
@@ -65,6 +69,11 @@ impl AppState {
         self
     }
 
+    pub fn with_ocr_jobs(mut self, jobs: Arc<ocrjob::OcrJobs>) -> Self {
+        self.ocr_jobs = Some(jobs);
+        self
+    }
+
     pub fn with_office(mut self, pool: Arc<office::Pool>) -> Self {
         self.office = Some(pool);
         self
@@ -78,6 +87,10 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/office/{op}", post(office))
+        .route("/ocr/pdf-job", post(ocrjob::start))
+        .route("/ocr/jobs", get(ocrjob::list))
+        .route("/ocr/jobs/{id}", get(ocrjob::get).delete(ocrjob::delete))
+        .route("/ocr/jobs/{id}/file", get(ocrjob::file))
         .route("/ocr/{op}", post(ocr))
         .route("/media/jobs", get(media::list))
         .route("/media/jobs/{id}", get(media::get).delete(media::delete))
@@ -95,9 +108,23 @@ async fn health(State(s): State<AppState>) -> Json<serde_json::Value> {
             "instances": s.office.as_ref().map(|p| p.size()),
             "warm": s.office.as_ref().map(|p| p.ready()),
         },
-        "ocr": { "ops": s.caps.ocr_ops(), "languages": s.caps.languages },
+        "ocr": ocr_health(&s),
         "media": media_health(&s),
     }))
+}
+
+fn ocr_health(s: &AppState) -> serde_json::Value {
+    let mut ops = s.caps.ocr_ops();
+    let mut v = json!({ "languages": s.caps.languages });
+    if let Some(o) = &s.ocr_jobs {
+        ops.push("pdf-job");
+        let (running, queued) = o.store.counts();
+        v["running"] = json!(running);
+        v["queued"] = json!(queued);
+        v["freeBytes"] = json!(o.free_bytes());
+    }
+    v["ops"] = json!(ops);
+    v
 }
 
 fn media_health(s: &AppState) -> serde_json::Value {

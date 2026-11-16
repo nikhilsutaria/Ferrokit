@@ -188,6 +188,61 @@ check "pdf that has text: skip"        r_has_text
 check "locked pdf → 422 (ocr)"         r_locked
 check "redo + straighten → 422"        r_redo_deskew
 
+# --- OCR as a background job (Batch 6) ---
+# job_start OPTIONS FILE — prints the job id (or the status and body on failure).
+job_start() {
+  local code; code=$(curl -s -o job.json -w '%{http_code}' -F "file=@$2" -F "options=$1" "$FERROKIT/api/ocr/pdf-job")
+  [ "$code" = 202 ] || { echo "HTTP $code: $(cat job.json)" >&2; return 1; }
+  sed -n 's/.*"id":"\([0-9a-f]\{32\}\)".*/\1/p' job.json
+}
+job_state() { curl -s "$FERROKIT/api/ocr/jobs/$1" | sed -n 's/.*"state":"\([a-z]*\)".*/\1/p'; }
+# job_wait ID — waits for the job to end, prints its state; the percents seen go to ID.pct.
+job_wait() {
+  local i s
+  for i in $(seq 1 600); do
+    curl -s "$FERROKIT/api/ocr/jobs/$1" > "$1.json"
+    s=$(sed -n 's/.*"state":"\([a-z]*\)".*/\1/p' "$1.json")
+    # The reply has no final newline, so add one: each reading on its own line.
+    { sed -n 's/.*"percent":\([0-9.]*\).*/\1/p' "$1.json"; echo; } >> "$1.pct"
+    case "$s" in done|failed|cancelled) echo "$s"; return 0 ;; esac
+    sleep 0.3
+  done
+  echo timeout
+}
+# Something between 0 and 100 was seen on the way: the progress bar really moves.
+mid_percent() { awk '$1 > 0 && $1 < 100 { found = 1 } END { exit !found }' "$1"; }
+j_scan() {
+  local id; id=$(job_start '{"text":true,"mode":"force"}' scan.pdf) || return 1
+  [ "$(job_wait "$id")" = done ] || { cat "$id.json"; return 1; }
+  mid_percent "$id.pct" || { echo "no progress seen: $(tr '\n' ' ' < "$id.pct")"; return 1; }
+  curl -s -o job-ocr.zip "$FERROKIT/api/ocr/jobs/$id/file" && zip_text job-ocr.zip > job.txt && has job.txt 'quick brown fox' && has job.txt 'page 20' \
+    && echo "$id" > done.id
+}
+j_range() {
+  local id; id=$(cat done.id) || return 1
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Range: bytes=0-1' "$FERROKIT/api/ocr/jobs/$id/file")" = 206 ]
+}
+# Cancel while running: the job says cancelled, and no OCRmyPDF, Tesseract or Ghostscript is left.
+j_cancel() {
+  local id i; id=$(job_start '{"mode":"force"}' scan.pdf) || return 1
+  for i in $(seq 1 100); do [ "$(job_state "$id")" = running ] && break; sleep 0.1; done
+  sleep 2
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$FERROKIT/api/ocr/jobs/$id")" = 204 ] || return 1
+  [ "$(job_state "$id")" = cancelled ] || return 1
+  sleep 1
+  ! docker exec ferrokit-ocr sh -c 'for p in /proc/[0-9]*; do tr "\0" " " < $p/cmdline 2>/dev/null; echo; done' | grep -E '^(python3 /usr/bin/ocrmypdf|tesseract|gs) ' \
+    || return 1
+  # OCRmyPDF's scratch folder lived in the job folder, so nothing is left in the RAM /tmp.
+  [ -z "$(docker exec ferrokit-ocr sh -c 'ls -d /tmp/ocrmypdf.io.* 2>/dev/null')" ]
+}
+j_locked()  { status_is 422 ocr/pdf-job lockedj.json '{}' locked.pdf && has lockedj.json 'password-protected'; }
+j_not_pdf() { status_is 422 ocr/pdf-job notpdf.json '{}' s-01.png && has notpdf.json "isn't a PDF"; }
+check "ocr job: 20-page scan, progress, .txt"  j_scan
+check "ocr job: Range download → 206"          j_range
+check "ocr job: cancel stops ocrmypdf"         j_cancel
+check "ocr job: locked pdf → 422 at once"      j_locked
+check "ocr job: not a pdf → 422 at once"       j_not_pdf
+
 # --- more checks are added by each task ---
 
 echo "----"

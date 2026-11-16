@@ -1,15 +1,17 @@
 # Ferrokit — handoff notes
 
 The design and the full tool catalog are in `docs/superpowers/specs/2026-11-13-ferrokit-design.md`
-(batch 1, plus the "Batch 2" to "Batch 5" sections). The batch 5 plan is in
-`docs/superpowers/plans/2026-11-16-media-addon.md`. How to run and develop is in `README.md`.
+(batch 1, plus the "Batch 2" to "Batch 6" sections). The batch 5 plan is in
+`docs/superpowers/plans/2026-11-16-media-addon.md`; batch 6 was small enough to build from its design
+section. How to run and develop is in `README.md`.
 
 ## Decisions
 
 - Build from scratch. No reverse-engineering of PDFill; REA isn't needed.
 - x86, no GPU. No logins, LAN only. Svelte SPA embedded in a Rust (axum) server. Slim core image plus add-on containers.
 - Batch 1: PDF and developer tools. Batch 2: every PDF tool that needs no add-on. Batch 3: image tools (core image).
-  Batch 4: the Office and OCR add-ons. Batch 5: the Media add-on with background jobs.
+  Batch 4: the Office and OCR add-ons. Batch 5: the Media add-on with background jobs. Batch 6: "Make PDF
+  searchable" as a background job (the user said "just dive in", so its calls are mine; see the design).
 - Office add-on is our own image (LibreOffice + Chromium + Ghostscript + Rust worker), not Gotenberg, so PDF → Word works.
 - OCR bundles every Tesseract language. EPUB conversion is ours (no Calibre).
 - Redaction burns pages in as images (user's choice).
@@ -60,11 +62,21 @@ The design and the full tool catalog are in `docs/superpowers/specs/2026-11-13-f
   (portrait sizing, long-video thumbnails, waveform memory, upload time limit, options cap, start-up
   clean, health-check blips). 16 minor ones were deferred; the ones people would notice are under Known limits.
 
+## Status at the end of batch 6 (2026-11-16)
+
+- **"Make PDF searchable" is a background job** on the OCR add-on: progress from an OCRmyPDF plugin
+  (`addons/ocr/ferrokit_progress.py`), cancel, the shared Jobs page, results kept 1 hour on the
+  `ferrokit-ocr-jobs` volume. Image-to-text stays instant. The instant `POST /api/ocr/pdf` stays for scripts.
+- **Tests:** worker 167, server 34 (Rust 315 in the last full run, before the final fix pass); web 485;
+  Office/OCR end-to-end 43 (5 new job checks); media end-to-end unchanged at 36.
+- **Final review:** 2 important findings fixed (OCRmyPDF scratch leaking into RAM on cancel; an
+  unusable jobs folder reported as "full"); 9 minor ones deferred (below).
+
 ## Known limits
 
 - PDF → Excel isn't there (LibreOffice can't do it; good table extraction is its own project).
 - PDF → Word/PowerPoint uses LibreOffice's PDF import: positioned text boxes, not flowing text.
-- OCR returns the result at the end; there's no progress bar for long scans (30-minute limit per request).
+- Image-to-text still answers in one request (it's usually seconds); only "Make PDF searchable" is a job.
 - "Clean up" in OCR only cleans what Tesseract reads; the pages look unchanged.
 - Web page to PDF runs in the add-on: use addresses the server can reach, and it can reach the LAN by design.
   It can't print `localhost` (that's the add-on itself; the error says to use the LAN address).
@@ -83,6 +95,10 @@ The design and the full tool catalog are in `docs/superpowers/specs/2026-11-13-f
   folder is cleared at start). No GPU, so long 4K encodes are slow. Files whose length ffmpeg can't read
   show a moving bar and the time processed instead of a percentage. Anyone on the LAN can see, download or
   cancel any job.
+- OCR jobs, deferred from the final review: no progress during PDF/A conversion (the bar waits at 90 %);
+  a missing progress plugin fails every job as "couldn't be read"; a vanished OCR job's card names the
+  Media add-on; the OCR page has no client-side size check; the Jobs page restarts its polling on each
+  health refresh and drops a down add-on's jobs without a note.
 - Media, deferred from the final review: merging a silent clip with others drops all sound; the
   fast merge doesn't compare audio sample rates; files with no extension fail in tools that keep the
   container; picture subtitle tracks are skipped without a note; non-UTF-8 .srt files burn in garbled;
@@ -91,7 +107,6 @@ The design and the full tool catalog are in `docs/superpowers/specs/2026-11-13-f
 
 ## Next batch candidates (not yet chosen)
 
-- Move OCR onto background jobs (reuse `jobs.rs`), so long scans get a progress bar.
 - AI add-on (CPU models): background removal, upscaling, transcription.
 - Pipelines (chain tools).
 - Files & data tools (mostly browser), or the remaining developer tools.

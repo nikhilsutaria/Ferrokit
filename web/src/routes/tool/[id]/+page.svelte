@@ -27,6 +27,8 @@
       <p class="where" data-runtime={tool.runtime}>
         {tool.runtime === 'addon' && tool.addon === 'media'
           ? 'Runs in the Media add-on on your Ferrokit server. Results are kept for 1 hour, then deleted.'
+          : tool.id === 'ocr-pdf'
+            ? 'Runs in the OCR add-on on your Ferrokit server. Results are kept for 1 hour, then deleted.'
           : tool.runtime === 'addon' && tool.addon
             ? `Runs in the ${ADDON_LABEL[tool.addon]} on your Ferrokit server. Files are deleted as soon as the result is sent.`
             : runtimeNote[tool.runtime]}

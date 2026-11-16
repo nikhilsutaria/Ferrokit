@@ -393,13 +393,47 @@ pub async fn unlock_pdf(input: &Path, bytes: &[u8], dir: &JobDir, name: &str) ->
     if !is_encrypted(bytes) {
         return Ok(input.to_path_buf());
     }
+    unlock_with_qpdf(input, dir.path(), name).await
+}
+
+/// [`unlock_pdf`] for a PDF already on disk, read in pieces rather than into memory: an owner-only
+/// lock is removed into `dir/unlocked.pdf`; a real password is a 422.
+pub async fn unlock_file(input: &Path, dir: &Path, name: &str) -> Result<PathBuf, ApiError> {
+    if !file_is_encrypted(input).await {
+        return Ok(input.to_path_buf());
+    }
+    unlock_with_qpdf(input, dir, name).await
+}
+
+/// Whether a PDF on disk mentions `/Encrypt`, scanning it in 1 MB pieces.
+async fn file_is_encrypted(path: &Path) -> bool {
+    use tokio::io::AsyncReadExt;
+    const NEEDLE: &[u8] = b"/Encrypt";
+    let Ok(mut f) = tokio::fs::File::open(path).await else { return false };
+    let mut buf = vec![0u8; 1 << 20];
+    let mut carry: Vec<u8> = Vec::new();
+    loop {
+        let n = match f.read(&mut buf).await {
+            Ok(0) | Err(_) => return false,
+            Ok(n) => n,
+        };
+        carry.extend_from_slice(&buf[..n]);
+        if carry.windows(NEEDLE.len()).any(|w| w == NEEDLE) {
+            return true;
+        }
+        let keep = carry.len().min(NEEDLE.len() - 1);
+        carry.drain(..carry.len() - keep);
+    }
+}
+
+async fn unlock_with_qpdf(input: &Path, dir: &Path, name: &str) -> Result<PathBuf, ApiError> {
     let mut check = Command::new("qpdf");
     check.arg("--requires-password").arg(input);
     let lock = run::run(check, Duration::from_secs(30)).await.ok().and_then(|o| o.status.code()).and_then(lock_from_code);
     match lock {
         Some(Lock::Open) => Ok(input.to_path_buf()),
         Some(Lock::OwnerOnly) => {
-            let open = dir.path().join("unlocked.pdf");
+            let open = dir.join("unlocked.pdf");
             let mut cmd = Command::new("qpdf");
             cmd.arg("--decrypt").arg(input).arg(&open);
             match run::run(cmd, Duration::from_secs(120)).await {

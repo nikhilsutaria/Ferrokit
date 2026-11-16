@@ -55,6 +55,29 @@ async fn main() {
         state = state.with_media(ferrokit_worker::media::Media::start(config).expect("media jobs folder"));
     }
 
+    if caps.ocrmypdf {
+        let minutes = |k: &str, d: u64| std::time::Duration::from_secs(60 * var(k).and_then(|v| v.parse().ok()).unwrap_or(d));
+        let config = ferrokit_worker::ocrjob::OcrConfig {
+            jobs: ferrokit_worker::jobs::Settings {
+                dir: var("FERROKIT_OCR_DIR").unwrap_or_else(|| "/jobs".into()).into(),
+                // OCRmyPDF already uses every core, so one job at a time.
+                video_slots: 1,
+                audio_slots: 1,
+                keep: minutes("FERROKIT_OCR_KEEP_MIN", 60),
+                limit: minutes("FERROKIT_OCR_JOB_LIMIT_MIN", 180),
+                max_jobs: 50,
+            },
+            max_upload: (max_mb as u64) * 1024 * 1024,
+            programs: ferrokit_worker::ocrjob::OcrPrograms::default(),
+            free_bytes_override: None,
+        };
+        // Without its jobs folder (an older compose file with no volume), instant OCR still works.
+        match ferrokit_worker::ocrjob::OcrJobs::start(config) {
+            Ok(jobs) => state = state.with_ocr_jobs(jobs),
+            Err(e) => tracing::warn!("OCR background jobs are off: can't use the jobs folder ({e})"),
+        }
+    }
+
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse().expect("FERROKIT_WORKER_PORT");
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     tracing::info!("ferrokit-worker {} listening on {addr}", env!("CARGO_PKG_VERSION"));

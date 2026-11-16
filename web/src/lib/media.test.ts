@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from './api';
-import { expiresIn, fileUrl, formatEta, formatTime, getJob, parseJob, parseJobs, parseTime, startJob } from './media';
+import { expiresIn, fileUrl, formatEta, formatTime, getJob, listJobs, parseJob, parseJobs, parseTime, removeJob, startJob } from './media';
 
 const ID = '0123456789abcdef0123456789abcdef';
 
@@ -60,7 +60,7 @@ describe('job text', () => {
   });
 
   it('builds the download address', () => {
-    expect(fileUrl(ID)).toBe(`/api/media/jobs/${ID}/file`);
+    expect(fileUrl(ID, 'media')).toBe(`/api/media/jobs/${ID}/file`);
   });
 });
 
@@ -161,5 +161,55 @@ describe('server calls', () => {
     expect(await getJob(ID)).toBe('gone');
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(job()), { status: 200 })));
     expect(((await getJob(ID)) as { id: string }).id).toBe(ID);
+  });
+
+  describe('OCR jobs', () => {
+    it('start, follow and download through the OCR add-on', async () => {
+      const sent = fakeXhr(202, job({ tool: 'ocr-pdf', state: 'queued' }));
+      const j = await startJob('pdf-job', [new File(['%PDF'], 'scan.pdf')], { text: true }, { addon: 'ocr' }).done;
+      expect(sent.url).toBe('/api/ocr/pdf-job');
+      expect(j.addon).toBe('ocr');
+      expect(fileUrl(ID, 'ocr')).toBe(`/api/ocr/jobs/${ID}/file`);
+      const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(job()), { status: 200 }));
+      vi.stubGlobal('fetch', fetch);
+      expect(((await getJob(ID, 'ocr')) as { addon: string }).addon).toBe('ocr');
+      expect(fetch.mock.calls[0][0]).toBe(`/api/ocr/jobs/${ID}`);
+      fetch.mockImplementation(async () => new Response(null, { status: 204 }));
+      await removeJob(ID, 'ocr');
+      expect(fetch.mock.calls[1]).toEqual([`/api/ocr/jobs/${ID}`, { method: 'DELETE' }]);
+    });
+
+    it('media stays the default', () => {
+      expect(parseJob(job())?.addon).toBe('media');
+      expect(fileUrl(ID, 'media')).toBe(`/api/media/jobs/${ID}/file`);
+    });
+
+    it('lists jobs from every add-on, newest first, even if one is down', async () => {
+      const OTHER = 'ffffffffffffffffffffffffffffffff';
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) => {
+          if (url === '/api/media/jobs') return new Response(JSON.stringify({ jobs: [job({ createdAt: 5 })], now: 9 }), { status: 200 });
+          if (url === '/api/ocr/jobs') return new Response(JSON.stringify({ jobs: [job({ id: OTHER, tool: 'ocr-pdf', createdAt: 7 })], now: 9 }), { status: 200 });
+          return new Response('', { status: 404 });
+        }),
+      );
+      const { jobs, now } = await listJobs(['media', 'ocr']);
+      expect(jobs.map((j) => [j.addon, j.createdAt])).toEqual([['ocr', 7], ['media', 5]]);
+      expect(now).toBe(9);
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) =>
+          url === '/api/ocr/jobs'
+            ? new Response('{"error":"The OCR add-on is not running."}', { status: 503 })
+            : new Response(JSON.stringify({ jobs: [job()], now: 9 }), { status: 200 }),
+        ),
+      );
+      expect((await listJobs(['media', 'ocr'])).jobs.map((j) => j.addon)).toEqual(['media']);
+
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"down"}', { status: 503 })));
+      await expect(listJobs(['media', 'ocr'])).rejects.toThrow();
+    });
   });
 });

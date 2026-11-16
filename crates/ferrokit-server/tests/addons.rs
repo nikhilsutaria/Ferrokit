@@ -393,6 +393,43 @@ async fn media_job_get_delete_and_list_forward() {
     );
 }
 
+/// "Make PDF searchable" jobs live in the OCR add-on and are forwarded the same way.
+#[tokio::test]
+async fn ocr_job_routes_forward() {
+    let (url, seen) = fake_media().await;
+    let s = app::State::new(Config {
+        office_url: CLOSED.into(),
+        ocr_url: url.clone(),
+        media_url: CLOSED.into(),
+        addon_limit_override: Some(Duration::from_secs(5)),
+        ..Config::default()
+    });
+    let (status, _, _) = send(&s, upload("/api/ocr/pdf-job", "x")).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (status, _, _) = send(&s, Request::get("/api/ocr/jobs").body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = send(&s, Request::get(format!("/api/ocr/jobs/{JOB}")).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = send(&s, Request::delete(format!("/api/ocr/jobs/{JOB}")).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let req = Request::get(format!("/api/ocr/jobs/{JOB}/file")).header(header::RANGE, "bytes=0-9").body(Body::empty()).unwrap();
+    let (status, headers, _) = send(&s, req).await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(headers[header::CONTENT_RANGE], "bytes 0-9/100");
+    let (status, _, _) = send(&s, Request::get("/api/ocr/jobs/XYZ").body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        [
+            "POST /ocr/pdf-job".to_string(),
+            "GET /ocr/jobs".to_string(),
+            format!("GET /ocr/jobs/{JOB}"),
+            format!("DELETE /ocr/jobs/{JOB}"),
+            format!("GET /ocr/jobs/{JOB}/file"),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn range_passes_both_ways() {
     let (url, _) = fake_media().await;

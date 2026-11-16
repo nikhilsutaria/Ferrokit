@@ -1,17 +1,18 @@
 <script lang="ts">
-  // Shared shell for media tools: pick file(s), set options, upload with a progress bar, then follow
-  // each background job on the Media add-on until its result is ready.
+  // Shared shell for background-job tools: pick file(s), set options, upload with a progress bar,
+  // then follow each job on its add-on (Media by default, or OCR) until its result is ready.
   import type { Snippet } from 'svelte';
   import { onDestroy } from 'svelte';
   import { ApiError } from '$lib/api';
   import { addons } from '$lib/addons.svelte';
   import { formatBytes } from '$lib/files';
   import { follow } from '$lib/jobs.svelte';
-  import { startJob, type Job } from '$lib/media';
+  import { startJob, type Job, type JobAddon } from '$lib/media';
   import FileDrop from './FileDrop.svelte';
   import JobCard from './JobCard.svelte';
 
   let {
+    addon = 'media',
     op,
     action,
     accept = 'video/*,.mkv,.mov,.avi,.webm,.mp4,.m4v,.ts,.mts,.wmv,.flv,.3gp',
@@ -23,6 +24,8 @@
     files = $bindable([]),
     fields,
   }: {
+    /** The add-on that runs the job. */
+    addon?: JobAddon;
     op: string;
     /** Button label, e.g. "Compress". */
     action: string;
@@ -53,7 +56,7 @@
   });
 
   const minFiles = $derived(many === 'merge' ? 2 : 1);
-  const limitMb = $derived(addons.status.media.maxUploadMb);
+  const limitMb = $derived(addons.status[addon].maxUploadMb);
 
   function tooBig(list: File[]): string | null {
     if (!limitMb) return null;
@@ -69,9 +72,13 @@
   function track(id: string) {
     stops.set(
       id,
-      follow(id, (j) => {
-        byId[id] = j;
-      }),
+      follow(
+        id,
+        (j) => {
+          byId[id] = j;
+        },
+        addon,
+      ),
     );
   }
 
@@ -85,7 +92,7 @@
   async function upload(list: File[]): Promise<boolean> {
     const name = list.length === 1 ? list[0].name : `${list.length} files`;
     uploading = { name, sent: 0, total: list.reduce((n, f) => n + f.size, 0) };
-    const started = startJob(op, list, options(), { subtitle }, (sent, total) => {
+    const started = startJob(op, list, options(), { subtitle, addon }, (sent, total) => {
       uploading = { name, sent, total };
     });
     abort = started.abort;

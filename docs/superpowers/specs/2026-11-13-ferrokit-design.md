@@ -764,3 +764,72 @@ about 66 MB. Changes from the plan, found while building and testing:
   30-minute limit starts after the upload, so 10 GB on ordinary Wi-Fi isn't cut off; the options part is
   capped at 64 KB; start-up removes only job folders; and a failed health check no longer swaps out
   open tool pages (an upload is aborted if its page goes away).
+
+## Batch 6 — OCR on background jobs (2026-11-16)
+
+**Why:** making a long scan searchable can take many minutes, and today it is one request with no
+progress (30-minute limit). The Media add-on now has a job engine with progress, cancel, a shared
+Jobs page and 1-hour results; "Make PDF searchable" should use it. The user chose this batch and then
+asked me to make the calls ("just dive in"), so everything below is my call.
+
+**Approaches considered:** (a) jobs for both OCR tools; (b) jobs for the PDF tool only, image-to-text
+stays instant; (c) a progress stream on the existing request (no jobs). (c) still dies with the tab and
+can't show on the Jobs page. (b) chosen: image-to-text usually takes seconds and its value is the text
+shown on the page with a Copy button; a job card would make it worse.
+
+### What changes
+- **Worker (OCR image):** `POST /ocr/pdf-job` takes the same upload and options as `POST /ocr/pdf` and
+  answers `202` with a job (same Job JSON as media; `tool` is `ocr-pdf`). `GET /ocr/jobs`,
+  `GET|DELETE /ocr/jobs/{id}`, `GET /ocr/jobs/{id}/file` (Range) behave exactly like the media ones.
+  `POST /ocr/pdf` (instant) stays for scripts and the API.
+- **Checks before queueing (422 at once):** options, languages, option combinations (Redo with
+  Straighten/Clean up), the file starting with `%PDF`, and a password-protected PDF. "Already has text"
+  is only known while OCRmyPDF runs, so that job fails with the same message as today.
+- **Engine:** the same `jobs::Store`, one job at a time (OCRmyPDF already uses every core), kept 1 hour,
+  stopped after 3 hours, at most 50 jobs. Settings on `ferrokit-ocr`: `FERROKIT_OCR_DIR` (`/jobs`),
+  `FERROKIT_OCR_KEEP_MIN` (60), `FERROKIT_OCR_JOB_LIMIT_MIN` (180). Uploads keep the OCR add-on's
+  existing 1 GB limit. The same free-disk check as media (input size + queued jobs + 1 GB).
+- **Storage:** a `ferrokit-ocr-jobs` volume at `/jobs`; uploads are streamed to it instead of RAM.
+  OCRmyPDF's scratch files go in the job's own folder there too (changed after the final review: in the
+  RAM `/tmp` they leaked whenever a cancel killed OCRmyPDF), so the free-disk check reserves three times
+  the upload.
+- **Progress:** a small OCRmyPDF plugin (`get_progressbar_class`) prints one machine-readable line per
+  update to stdout (`FERROKIT-PROGRESS <total> <done> <stage>`). Stages map to a percentage: scanning
+  0–5 %, OCR 5–90 % (by pages done), everything after (linearising, image optimisation) 90–99 %.
+  Time left comes from the OCR rate. It runs under `nice`, in its own process group, so cancel and the
+  time limit kill OCRmyPDF, Tesseract and Ghostscript together.
+- **Core:** forwards `/api/ocr/jobs`, `/api/ocr/jobs/{id}` (GET, DELETE), `/api/ocr/jobs/{id}/file`
+  exactly like the media routes (job ids checked, Range passed). `/api/health` → `addons.ocr` gains
+  `running` and `queued`.
+- **Web:** the job pieces take an add-on (`media` or `ocr`). "Make PDF searchable" becomes a job page
+  with the same fields. The Jobs page lists jobs from every running add-on that has them, newest first;
+  the header link appears when either is running and counts both. If neither is running, the Jobs page
+  says which add-ons to start.
+
+### Non-goals
+Image-to-text as a job; keeping jobs across an add-on restart; an internal network for the OCR add-on.
+
+### Done means
+Worker tests with a fake `ocrmypdf` (progress lines → percent, cancel kills the tree, checks before
+queueing, the result and the optional `.txt` ZIP); core proxy tests for the OCR job routes; web tests
+for add-on-aware job URLs and the merged Jobs list; `scripts/addons-smoke.sh` runs a 20-page scan as a
+job (progress seen, result searchable, cancel, Range) against the real add-on; the instant OCR checks
+still pass.
+
+### Build order
+1. Worker: progress plugin + parser + the OCR job runner (fake `ocrmypdf` tests).
+2. Worker: routes, checks before queueing, health, settings.
+3. Core: OCR job routes and health fields.
+4. Docker + compose + smoke checks.
+5. Web: add-on-aware jobs, the PDF page, the Jobs page and header.
+6. Docs, full runs, a fresh review.
+
+**Batch 6 status (2026-11-16): done.** "Make PDF searchable" runs as a background job on the OCR add-on,
+listed on the shared Jobs page with media jobs. Measured against the real add-on: a 20-page scan with
+its text takes about 6 s with progress shown along the way; cancel leaves no OCRmyPDF, Tesseract or
+Ghostscript running and no scratch files. Changes from the design, found while testing: the job
+card's Download link used the media address for OCR jobs (the address now always names its add-on);
+OCRmyPDF's scratch folder moved from the RAM `/tmp` into the job folder (it leaked on cancel); a jobs
+folder that can't be written is reported as such instead of "50 jobs waiting", and the page falls back
+to the instant request when the add-on has no jobs. Unknown OCR option names are now refused.
+

@@ -30,24 +30,39 @@ pub async fn media_jobs(AxState(state): AxState<State>, req: Request) -> Result<
 
 /// `GET`/`DELETE /api/media/jobs/{id}`.
 pub async fn media_job(AxState(state): AxState<State>, Path(id): Path<String>, req: Request) -> Result<Response, ApiError> {
-    job(&state, &id, "", req).await
+    job(&state, Addon::Media, &id, "", req).await
 }
 
 /// `GET /api/media/jobs/{id}/file`.
 pub async fn media_job_file(AxState(state): AxState<State>, Path(id): Path<String>, req: Request) -> Result<Response, ApiError> {
-    job(&state, &id, "/file", req).await
+    job(&state, Addon::Media, &id, "/file", req).await
+}
+
+/// `GET /api/ocr/jobs`: the OCR add-on's "Make PDF searchable" jobs.
+pub async fn ocr_jobs(AxState(state): AxState<State>, req: Request) -> Result<Response, ApiError> {
+    forward(&state, Addon::Ocr, Method::GET, "jobs", req, JOB_LIMIT).await
+}
+
+/// `GET`/`DELETE /api/ocr/jobs/{id}`.
+pub async fn ocr_job(AxState(state): AxState<State>, Path(id): Path<String>, req: Request) -> Result<Response, ApiError> {
+    job(&state, Addon::Ocr, &id, "", req).await
+}
+
+/// `GET /api/ocr/jobs/{id}/file`.
+pub async fn ocr_job_file(AxState(state): AxState<State>, Path(id): Path<String>, req: Request) -> Result<Response, ApiError> {
+    job(&state, Addon::Ocr, &id, "/file", req).await
 }
 
 /// Job requests are quick for the worker to start answering; a download may then take as long as it needs.
 const JOB_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-async fn job(state: &State, id: &str, rest: &str, req: Request) -> Result<Response, ApiError> {
+async fn job(state: &State, addon: Addon, id: &str, rest: &str, req: Request) -> Result<Response, ApiError> {
     // Job ids are 32 lower-case hex characters; anything else never reaches the worker.
     if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "No such job."));
     }
     let method = req.method().clone();
-    forward(state, Addon::Media, method, &format!("jobs/{id}{rest}"), req, JOB_LIMIT).await
+    forward(state, addon, method, &format!("jobs/{id}{rest}"), req, JOB_LIMIT).await
 }
 
 /// Response headers worth passing back to the browser.
@@ -73,8 +88,6 @@ async fn start(state: &State, addon: Addon, op: &str, req: Request) -> Result<Re
     forward(state, addon, Method::POST, op, req, timeout).await
 }
 
-/// Send `req` to `{addon url}/{addon}/{path}` and stream the reply back. `timeout` covers the wait for
-/// the worker to start answering, not the download.
 /// How long an upload may go without sending a byte before it's given up; also the grace period
 /// before the minimum speed applies.
 const UPLOAD_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
@@ -82,6 +95,8 @@ const UPLOAD_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 /// any real connection, so only a deliberately dripped upload is given up.
 const UPLOAD_MIN_BYTES_PER_SEC: f64 = 16.0 * 1024.0;
 
+/// Send `req` to `{addon url}/{addon}/{path}` and stream the reply back. `timeout` covers the wait for
+/// the worker to start answering once the upload is in, not the upload or the download.
 pub async fn forward(
     state: &State,
     addon: Addon,

@@ -11,27 +11,23 @@ pub mod video;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use axum::body::Body;
 use axum::extract::{Multipart, Path as UrlPath, Request, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use ferrokit_http::ApiError;
-use serde_json::{json, Value};
-use tokio::io::AsyncWriteExt;
-use tower::ServiceExt;
+use serde_json::Value;
 
 use crate::ffmpeg::Programs;
 use crate::jobs::{self, InputInfo, Store};
+use crate::jobs_http;
 use crate::AppState;
 use plan::Input;
 
-/// Free space always left over after a job's result, so the disk never fills completely.
-const HEADROOM: u64 = 1 << 30;
+/// How the media add-on is named in messages.
+const ADDON: &str = "media add-on";
 /// The most files one merge takes.
 const MAX_FILES: usize = 20;
-/// The largest `options` part, which is read into memory.
-const MAX_OPTIONS: usize = 64 * 1024;
 
 pub struct Config {
     pub jobs: jobs::Settings,
@@ -65,27 +61,8 @@ impl Media {
 
     /// Free space on the jobs volume.
     pub fn free_bytes(&self) -> u64 {
-        self.free_bytes_override.unwrap_or_else(|| free_space(&self.dir))
+        self.free_bytes_override.unwrap_or_else(|| jobs_http::free_space(&self.dir))
     }
-}
-
-#[cfg(unix)]
-fn free_space(dir: &Path) -> u64 {
-    use std::os::unix::ffi::OsStrExt;
-    let Ok(path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else { return 0 };
-    // SAFETY: statvfs fills the zeroed struct; the path is a valid NUL-terminated string.
-    unsafe {
-        let mut s: libc::statvfs = std::mem::zeroed();
-        if libc::statvfs(path.as_ptr(), &mut s) != 0 {
-            return 0;
-        }
-        (s.f_bavail as u64).saturating_mul(s.f_frsize as u64)
-    }
-}
-
-#[cfg(not(unix))]
-fn free_space(_dir: &Path) -> u64 {
-    u64::MAX
 }
 
 fn media(s: &AppState) -> Result<Arc<Media>, ApiError> {
@@ -102,34 +79,6 @@ fn safe_ext(name: &str) -> String {
     }
 }
 
-fn multipart_error(e: axum::extract::multipart::MultipartError) -> ApiError {
-    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
-        return ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "That upload is bigger than the media add-on allows.");
-    }
-    ApiError::new(e.status(), format!("Upload failed: {}", e.body_text()))
-}
-
-/// Stream one multipart field into `path`, never holding it in memory. Returns its size.
-async fn save(mut field: axum::extract::multipart::Field<'_>, path: &Path, limit: u64) -> Result<u64, ApiError> {
-    let mut file = tokio::fs::File::create(path).await.map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Couldn't save the upload: {e}")))?;
-    let mut size = 0u64;
-    while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
-        size += chunk.len() as u64;
-        if size > limit {
-            return Err(ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "That upload is bigger than the media add-on allows."));
-        }
-        file.write_all(&chunk).await.map_err(|e| {
-            let full = e.raw_os_error() == Some(28);
-            ApiError::new(
-                if full { StatusCode::INSUFFICIENT_STORAGE } else { StatusCode::INTERNAL_SERVER_ERROR },
-                if full { "The media add-on's disk is full.".to_string() } else { format!("Couldn't save the upload: {e}") },
-            )
-        })?;
-    }
-    file.flush().await.map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Couldn't save the upload: {e}")))?;
-    Ok(size)
-}
-
 struct Upload {
     inputs: Vec<(String, String, u64)>, // (fixed file, original name, bytes)
     subtitle: Option<String>,
@@ -142,7 +91,7 @@ async fn receive(op: &str, dir: &Path, mut form: Multipart, limit: u64) -> Resul
     let mut up = Upload { inputs: Vec::new(), subtitle: None, subtitle_name: String::new(), options: Value::Null };
     let max_files = if plan::takes_many(op) { MAX_FILES } else { 1 };
     let mut total = 0u64;
-    while let Some(field) = form.next_field().await.map_err(multipart_error)? {
+    while let Some(field) = form.next_field().await.map_err(|e| jobs_http::multipart_error(ADDON, e))? {
         match field.name().unwrap_or_default() {
             "file" => {
                 if up.inputs.len() >= max_files {
@@ -154,7 +103,7 @@ async fn receive(op: &str, dir: &Path, mut form: Multipart, limit: u64) -> Resul
                 }
                 let name = field.file_name().unwrap_or("upload").to_string();
                 let fixed = format!("in-{}.{}", up.inputs.len() + 1, safe_ext(&name));
-                let size = save(field, &dir.join(&fixed), limit.saturating_sub(total)).await?;
+                let size = jobs_http::save(ADDON, field, &dir.join(&fixed), limit.saturating_sub(total)).await?;
                 total += size;
                 up.inputs.push((fixed, name, size));
             }
@@ -165,25 +114,11 @@ async fn receive(op: &str, dir: &Path, mut form: Multipart, limit: u64) -> Resul
                     return Err(ApiError::unprocessable(format!("{name} isn't a subtitle file. Use .srt, .ass or .vtt.")));
                 }
                 let fixed = format!("sub.{ext}");
-                total += save(field, &dir.join(&fixed), limit.saturating_sub(total)).await?;
+                total += jobs_http::save(ADDON, field, &dir.join(&fixed), limit.saturating_sub(total)).await?;
                 up.subtitle = Some(fixed);
                 up.subtitle_name = name;
             }
-            "options" => {
-                // Read in pieces with a small cap: this part goes to memory, not disk.
-                let mut field = field;
-                let mut raw = Vec::new();
-                while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
-                    if raw.len() + chunk.len() > MAX_OPTIONS {
-                        return Err(ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "The options are too long."));
-                    }
-                    raw.extend_from_slice(&chunk);
-                }
-                let text = String::from_utf8_lossy(&raw);
-                if !text.trim().is_empty() {
-                    up.options = serde_json::from_str(&text).map_err(|e| ApiError::bad(format!("Bad options: {e}")))?;
-                }
-            }
+            "options" => up.options = jobs_http::read_options(ADDON, field).await?,
             _ => {}
         }
     }
@@ -199,12 +134,7 @@ pub async fn start(State(s): State<AppState>, UrlPath(op): UrlPath<String>, form
     if !plan::OPS.contains(&op.as_str()) {
         return Err(ApiError::new(StatusCode::NOT_FOUND, format!("Unknown tool \"{op}\".")));
     }
-    let job = m.store.new_job(&op, plan::lane(&op)).map_err(|_| {
-        ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "The media add-on already has 50 jobs waiting or running. Try again when some have finished.",
-        )
-    })?;
+    let job = m.store.new_job(&op, plan::lane(&op)).map_err(|e| jobs_http::new_job_error(ADDON, e))?;
     match prepare(&m, &op, &job.dir, form).await {
         Ok((inputs, reserve, plan)) => {
             let programs = m.programs.clone();
@@ -252,60 +182,29 @@ async fn prepare(m: &Media, op: &str, dir: &Path, form: Multipart) -> Result<(Ve
 
     // Room for the result (about the size of the inputs again), on top of what queued jobs need.
     let size: u64 = up.inputs.iter().map(|(_, _, b)| b).sum();
-    let free = m.free_bytes();
-    if free < size.saturating_add(m.store.reserved_bytes()).saturating_add(HEADROOM) {
-        return Err(ApiError::new(
-            StatusCode::INSUFFICIENT_STORAGE,
-            format!("The media add-on's disk is nearly full ({:.1} GB free). Download or dismiss finished jobs, or free some space.", free as f64 / 1e9),
-        ));
-    }
+    jobs_http::disk_guard(ADDON, m.free_bytes(), size, m.store.reserved_bytes())?;
     let infos = up.inputs.into_iter().map(|(_, name, bytes)| InputInfo { name, bytes }).collect();
     Ok((infos, size, plan))
 }
 
 /// `GET /media/jobs`: every job, newest first.
 pub async fn list(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let m = media(&s)?;
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-    Ok(Json(json!({ "jobs": m.store.list(), "now": now })))
-}
-
-fn no_job() -> ApiError {
-    ApiError::new(StatusCode::NOT_FOUND, "This job is no longer on the server.")
+    Ok(jobs_http::list(&media(&s)?.store))
 }
 
 /// `GET /media/jobs/{id}`.
 pub async fn get(State(s): State<AppState>, UrlPath(id): UrlPath<String>) -> Result<Response, ApiError> {
-    let m = media(&s)?;
-    Ok(Json(m.store.get(&id).ok_or_else(no_job)?).into_response())
+    jobs_http::get(&media(&s)?.store, &id)
 }
 
 /// `DELETE /media/jobs/{id}`: cancel a waiting or running job, or dismiss a finished one.
 pub async fn delete(State(s): State<AppState>, UrlPath(id): UrlPath<String>) -> Result<StatusCode, ApiError> {
-    let m = media(&s)?;
-    if m.store.delete(&id).await {
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err(no_job())
-    }
+    jobs_http::delete(&media(&s)?.store, &id).await
 }
 
 /// `GET /media/jobs/{id}/file`: the result, with Range support so videos can be seeked.
 pub async fn file(State(s): State<AppState>, UrlPath(id): UrlPath<String>, req: Request) -> Result<Response, ApiError> {
-    let m = media(&s)?;
-    let (path, name, mime) = m.store.result_path(&id).ok_or_else(no_job)?;
-    let served = tower_http::services::ServeFile::new_with_mime(&path, &mime.parse().unwrap_or(mime_guess::mime::APPLICATION_OCTET_STREAM))
-        .oneshot(req)
-        .await
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Couldn't send the result: {e}")))?;
-    let mut res = served.map(Body::new);
-    if res.status().is_success() {
-        if let Ok(v) = HeaderValue::from_str(&ferrokit_http::upload::content_disposition(&name)) {
-            res.headers_mut().insert(header::CONTENT_DISPOSITION, v);
-        }
-        res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    }
-    Ok(res)
+    jobs_http::file(&media(&s)?.store, &id, req).await
 }
 
 #[cfg(test)]
