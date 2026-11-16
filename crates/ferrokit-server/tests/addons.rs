@@ -92,12 +92,30 @@ async fn slow_upload_is_not_cut_off() {
             return None;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
-        Some((Ok::<_, std::io::Error>(Bytes::from(vec![b'a' + n; 4])), n + 1))
+        // 32 KB every half second: slow, but a real upload (well over the 16 KB/s minimum).
+        Some((Ok::<_, std::io::Error>(Bytes::from(vec![b'a' + n; 32 * 1024])), n + 1))
     });
     let req = Request::post("/api/office/to-pdf").body(Body::from_stream(slow)).unwrap();
     let (status, _, body) = send(&s, req).await;
     assert_eq!(status, StatusCode::OK, "{}", error_of(&body));
-    assert_eq!(body, b"aaaabbbbccccdddd");
+    assert_eq!(body.len(), 4 * 32 * 1024);
+    assert!(body.starts_with(b"aaaa") && body.ends_with(b"dddd"));
+}
+
+/// Dripping a few bytes now and then (never idle for a minute) can't hold a slot either: after a
+/// grace period an upload must average at least 16 KB/s. (The grace period is 60 s; the test
+/// override shortens it with the rest.)
+#[tokio::test]
+async fn dripping_upload_is_given_up() {
+    let s = state_with(&fake_worker().await, Duration::from_secs(1));
+    let drip = futures_util::stream::unfold((), |()| async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        Some((Ok::<_, std::io::Error>(Bytes::from_static(b"x")), ()))
+    });
+    let req = Request::post("/api/office/to-pdf").body(Body::from_stream(drip)).unwrap();
+    let res = tokio::time::timeout(Duration::from_secs(5), send(&s, req)).await;
+    let (status, _, _) = res.expect("a dripping upload must not hold the request open");
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
 
 /// An upload that stops sending is given up, so it can't hold an add-on job slot for ever. (The

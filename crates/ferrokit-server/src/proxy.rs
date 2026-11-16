@@ -75,8 +75,12 @@ async fn start(state: &State, addon: Addon, op: &str, req: Request) -> Result<Re
 
 /// Send `req` to `{addon url}/{addon}/{path}` and stream the reply back. `timeout` covers the wait for
 /// the worker to start answering, not the download.
-/// How long an upload may go without sending a byte before it's given up.
+/// How long an upload may go without sending a byte before it's given up; also the grace period
+/// before the minimum speed applies.
 const UPLOAD_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+/// The slowest average an upload may keep up after the grace period: 16 KB/s (128 kbit/s), far below
+/// any real connection, so only a deliberately dripped upload is given up.
+const UPLOAD_MIN_BYTES_PER_SEC: f64 = 16.0 * 1024.0;
 
 pub async fn forward(
     state: &State,
@@ -113,12 +117,24 @@ pub async fn forward(
         });
         // With no overall limit on the upload, a client that stops sending would hold its add-on job
         // slot for ever: give up after a minute without a byte (shorter when the limit is shorter).
+        // Dripping a byte now and then would get past that, so after the same grace period the upload
+        // must also average a minimum speed.
         let idle = timeout.min(UPLOAD_IDLE);
-        let chunks = futures_util::stream::unfold(req.into_body().into_data_stream(), move |mut body| async move {
+        let started = tokio::time::Instant::now();
+        let stalled = |why: &str| Err(axum::Error::new(std::io::Error::new(std::io::ErrorKind::TimedOut, why.to_string())));
+        let chunks = futures_util::stream::unfold((req.into_body().into_data_stream(), 0u64), move |(mut body, sent)| async move {
             match tokio::time::timeout(idle, body.next()).await {
-                Ok(Some(chunk)) => Some((chunk, body)),
+                Ok(Some(Ok(chunk))) => {
+                    let sent = sent + chunk.len() as u64;
+                    let secs = started.elapsed().as_secs_f64();
+                    if secs > idle.as_secs_f64() && (sent as f64) < secs * UPLOAD_MIN_BYTES_PER_SEC {
+                        return Some((stalled("the upload is too slow"), (body, sent)));
+                    }
+                    Some((Ok(chunk), (body, sent)))
+                }
+                Ok(Some(Err(e))) => Some((Err(e), (body, sent))),
                 Ok(None) => None,
-                Err(_) => Some((Err(axum::Error::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "the upload stalled"))), body)),
+                Err(_) => Some((stalled("the upload stalled"), (body, sent))),
             }
         });
         let body = reqwest::Body::wrap_stream(chunks.chain(end));
