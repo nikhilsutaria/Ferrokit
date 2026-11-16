@@ -510,3 +510,233 @@ at about 65 MB. Changes found while testing: a stopped add-on reported "didn't a
 "isn't running" (fixed); pages built by JavaScript printed blank (the worker now waits for the page to
 settle); and a batch-1 print rule in the Wi-Fi QR tool blanked every other page when printed (fixed).
 `GET /api/health?refresh=1` was added so "Check again" doesn't wait for the 15-second check.
+
+## Batch 5 — Media add-on with background jobs (2026-11-16)
+
+**From the user:**
+- Next up is the Media add-on (ffmpeg): the 22 video and audio tools in section 13.
+- Long jobs get a **live progress bar** and keep running when the tab closes; you come back and
+  download the result.
+- The Jobs list is **shared by everyone on the LAN**, so a job started on a laptop can be downloaded
+  on a phone.
+- A finished file stays on the server for **1 hour**, then it is deleted.
+- Jobs live **in the add-on**, not in the core.
+
+**Why background jobs:** video is far slower than Office or OCR. Compressing a 1 GB phone video on a CPU
+takes 5–20 minutes. One long request with a spinner gives no sense of how long is left, and closing the
+tab loses the work.
+
+### Approaches (where jobs live)
+1. **In the add-on worker** (chosen by the user).
+   - The Media container receives the upload, runs ffmpeg, tracks progress and keeps the result on its
+     own volume. The core only passes requests through.
+   - Each file is uploaded once and downloaded once, and the core stays slim.
+   - Office, OCR and Media share the worker binary, so OCR can get the same progress bar later at
+     little cost.
+   - Cost: a running job is lost if the add-on restarts.
+2. **In the core.** The core stores uploads and results and drives the add-ons. That gives one central
+   Jobs list and could retry after an add-on restart, but every video is copied twice (browser → core →
+   add-on and back) and the slim core needs large-file storage even for people without Media.
+3. **In the browser (ffmpeg.wasm).** Needs no add-on, but it is 5–10× slower, capped at about 2 GB of
+   memory, and the job dies with the tab, which contradicts the chosen behaviour.
+
+### How it fits together
+```
+browser ─► core :8080 ─ POST   /api/media/{op}               ─► ferrokit-media :8090  → 202 {job}
+                      ─ GET    /api/media/jobs                ─►   list (everyone's jobs)
+                      ─ GET    /api/media/jobs/{id}           ─►   one job: state, %, time left
+                      ─ GET    /api/media/jobs/{id}/file      ─►   result (Range supported)
+                      ─ DELETE /api/media/jobs/{id}           ─►   cancel if running, else delete
+```
+- **Worker:** the same `ferrokit-worker` binary.
+  - It turns media ops on when `ffmpeg` and `ffprobe` are on `PATH`.
+  - `GET /health` gains a `media` section: ops, queue lengths, free disk space.
+- **New worker module `jobs`.** Built generic so OCR can adopt it later; this batch wires only media.
+  - An in-memory job table: id, tool, input names, state, percent, time left, error, result name and
+    size, created / started / finished times.
+  - Each job has a folder on the jobs volume.
+  - Job ids are random 128-bit values (hex), so links can't be guessed.
+- **Core:**
+  - `FERROKIT_MEDIA_URL` (default `http://ferrokit-media:8090`) and an `Addon::Media` health check.
+  - The proxy learns `GET` and `DELETE` for the `jobs` paths, passes `Range` / `If-Range` through, and
+    sends back `206`, `Content-Range` and `Accept-Ranges`.
+  - The start request keeps the existing 30-minute "start answering" backstop. That covers the upload
+    plus the worker's quick checks, after which it replies `202` at once.
+- **Compose:** a `ferrokit-media` service under the profile `media`, built from
+  `addons/media/Dockerfile`.
+  - Read-only and non-root, with no published ports.
+  - A named volume `ferrokit-media-jobs` mounted at `/jobs`. The results are too big for RAM.
+  - A small tmpfs for scratch files.
+- **Upload size (from the user):** media has its own limit, `FERROKIT_MEDIA_MAX_UPLOAD_MB`, default **10 GB per request**. It is set on both the core (which checks it on `/api/media/*` only) and the media add-on. PDF, image, Office and OCR stay at `FERROKIT_MAX_UPLOAD_MB` (1 GB). `/api/health` reports the media limit, so the page can refuse a too-big file before uploading it.
+
+### The job lifecycle
+1. **Start.** `POST /media/{op}` (multipart: `file` fields + `options` JSON).
+   - The worker **streams each upload straight to disk**, never into memory, and enforces
+     `FERROKIT_MEDIA_MAX_UPLOAD_MB`.
+   - It runs `ffprobe` on each input. A file with no usable video or audio stream for that tool gets a
+     clear 422 at once, before the job is queued.
+   - It checks free space: there must be room for about the input size again (the result) plus 1 GB.
+     If not, it returns 507 "The media add-on's disk is nearly full", naming how much is free.
+   - On success it replies `202 {id, …}`.
+2. **Queue.** Two lanes, each running one job at a time:
+   - **video:** every tool that writes video or a GIF;
+   - **audio:** audio tools, waveform and extract audio.
+   - Short audio jobs don't wait behind a 20-minute encode. Waiting jobs show their place in line.
+   - `FERROKIT_MEDIA_VIDEO_JOBS` (default 1) and `FERROKIT_MEDIA_AUDIO_JOBS` (default 1) can raise this.
+3. **Run.** ffmpeg runs in its own process group (the existing `run::Group` guard) with
+   `-progress pipe:1 -nostats`.
+   - Percent comes from `out_time` divided by the **expected output duration**. That is the probed
+     duration, adjusted for trim, speed and merge; for a merge it is the sum of the inputs.
+   - Time left comes from ffmpeg's reported `speed`.
+   - Tools that run two passes (normalise, stabilise) report one combined bar (pass 1 = first half,
+     pass 2 = second half).
+   - When the length is unknown, the bar shows "working" with the processed time instead of a percent.
+4. **Finish.** Inputs are deleted as soon as the job ends, whatever the outcome.
+   - A finished result is kept for **1 hour from finishing**, then deleted.
+   - Failed and cancelled jobs stay in the list (no file) for the same hour, so the person who comes
+     back sees what happened.
+   - Error text is plain language, with the last ffmpeg line added only when it helps (the same
+     `stderr_tail` pattern as Office).
+5. **Cancel / dismiss.** `DELETE` on a queued or running job stops it (kills the group) and removes its
+   files. On a finished job it deletes the result and drops it from the list.
+6. **Limits.**
+   - One job may run for at most **3 hours** (`FERROKIT_MEDIA_JOB_LIMIT_MIN`); after that it fails
+     with "took longer than 3 hours".
+   - At most **50** jobs are kept in the list. When the list is full, the oldest finished one is
+     dropped early; if all 50 are queued or running, new starts get 429.
+7. **Restarts.** On start the worker empties `/jobs`, because nothing from a previous run is listed.
+   Running jobs are lost; that is the accepted cost of approach 1.
+
+### Safety (ffmpeg reads untrusted files)
+- Every ffmpeg and ffprobe run uses `-protocol_whitelist file,pipe`, so a crafted file (an HLS or
+  concat playlist inside an AVI, for example) can't make ffmpeg fetch addresses or read other files on
+  the machine.
+- Merge uses the concat demuxer with `-safe 1` and a list file the worker writes from its own sanitised
+  file names.
+- Uploaded file names are never used as paths. Inputs are saved as `in-1.<ext>`, `in-2.<ext>`, …; the
+  original name is kept only for display and for naming the result.
+- Every filter argument (times, sizes, text, subtitle paths) is built from validated numbers or escaped
+  per ffmpeg's filter-graph rules. Nothing from the browser is pasted into a filter string raw.
+- The container needs no internet access. It sits on the compose network only, like the other
+  add-ons.
+
+### Tools (22)
+Defaults aim for "plays everywhere": **MP4 (H.264 + AAC)** for video and **MP3** for audio, unless the
+person picks another format.
+
+| Tool | ffmpeg | Options |
+|---|---|---|
+| Convert video | remux when the codecs already fit, else re-encode | MP4, WebM (VP9 + Opus), MKV, MOV, AVI; quality preset |
+| Compress video | libx264 / libx265 with CRF | Smaller / Balanced / Better quality; optional max resolution (1080p, 720p, 480p); H.264 (plays everywhere) or H.265 (smaller) |
+| Trim video | stream copy when "fast" is ticked (cuts on keyframes), else re-encode for exact cuts | start and end time |
+| Merge videos | concat demuxer when every input matches, else concat filter with scale/pad to the first clip's size | file order (drag to reorder) |
+| Resize video | `scale` keeping the aspect ratio | presets or width; height follows |
+| Crop and rotate video | `crop`, `transpose`, `hflip`/`vflip` | rotate 90/180/270, flip, crop box |
+| Change speed | `setpts` + `atempo` chain | 0.25×–4×; or set FPS |
+| Mute video | `-an -c:v copy` | — |
+| Extract audio | copy when the codec fits, else encode | MP3, M4A (AAC), WAV, FLAC, OGG |
+| Video to GIF | two-pass `palettegen` / `paletteuse` | start, length (max 30 s), width, FPS |
+| Stabilise video | `vidstabdetect` → `vidstabtransform` | strength |
+| Subtitles | burn: `subtitles` filter (libass); extract: `-map 0:s:N` to SRT | burn in an uploaded SRT/ASS, or the video's own default (else first) text track; extract every text track: one track gives an .srt, several give a ZIP named by track number and language |
+| Thumbnails | `fps`/`select` + `tile` | N frames as ZIP, or one contact sheet |
+| Convert audio | encode | MP3, M4A, OGG (Opus/Vorbis), FLAC, WAV; bitrate |
+| Trim audio | copy or re-encode | start and end time |
+| Merge or split audio | concat; `segment` / split at times or silences | order; split every N minutes or at given times → ZIP |
+| Normalise loudness | `loudnorm` two passes (EBU R128) | target: podcast −16 LUFS, music −14, broadcast −23 |
+| Volume and fades | `volume`, `afade` | gain dB, fade-in / fade-out seconds |
+| Pitch shift | `rubberband` (pitch only) | ±12 semitones |
+| Remove silence | `silenceremove` | threshold dB, minimum gap |
+| Reduce noise | `afftdn` | light / medium / strong |
+| Waveform image | `showwavespic` | size, colour; PNG |
+
+Several files given to a single-file tool start **one job per file**, so each gets its own bar and its
+own download. Merge is one job with several inputs.
+
+### Web
+- **Shared component `MediaJob`:** file picker, the tool's options, then **Start**.
+  - The upload uses `XMLHttpRequest`, so it has its own progress bar ("Uploading 340 MB of 1.2 GB").
+    `fetch` can't report upload progress.
+  - Once the server replies, the page shows the job card:
+    ```
+     Compress video
+     ┌──────────────────────────────────────────────┐
+     │ holiday.mov  1.2 GB                          │
+     │ ███████████████░░░░░░░░░░░  58%  ~4 min left │
+     │ You can close this tab — it keeps running.   │
+     │                               [ Cancel ]     │
+     └──────────────────────────────────────────────┘
+    ```
+- **Jobs page `/jobs`:** every media job on the server, newest first, each with:
+  - state, progress, tool and file name;
+  - Download (when done), Cancel (while running) or Dismiss (when done or failed);
+  - "Deleted in 42 min".
+  - A plain note at the top: everyone on your network sees this list.
+  - The header shows a small "Jobs (2 running)" link whenever any job is queued or running.
+- **Polling:** once a second while a job card or the Jobs page is visible, every 10 s when the tab
+  is hidden, and not at all when no job is active.
+- **Previews:** the result plays in a `<video>` / `<audio>` element when the browser can play it (Range
+  support makes seeking work). The images from Waveform and Thumbnails show inline.
+- **Picking times:** Trim, GIF and Thumbnails show a player with "Set start" / "Set end" buttons
+  when the browser can play the file. Typed times (`1:23.5`) always work, so HEVC/MOV files a browser
+  can't play still trim fine.
+- **When the add-on is down:** tools use the existing `AddonGate`, and the Jobs page says the Media
+  add-on isn't running.
+- **Tool count:** the 22 tools go from "planned" to ready, making 130.
+
+### Image
+- Debian trixie-slim with Debian's `ffmpeg`. It includes libx264, libx265, libvpx, libopus, libmp3lame,
+  libvidstab, librubberband and libass. Their presence is checked at build time with
+  `ffmpeg -filters` / `-encoders` in the Dockerfile so a missing one fails the build.
+- The same fonts as Office for burned-in subtitles, plus tini.
+- Expected size: roughly 400–600 MB.
+- ffmpeg uses every CPU core. Encodes use `-threads 0` and the `veryfast` (x264) / `fast` (x265)
+  presets: on a home CPU, speed matters more than the last few percent of size.
+
+### Claude's calls
+- **Queueing:** two lanes of one job each. Two encodes at once on one CPU each run at half speed, so
+  running them together gains nothing and makes both bars look stuck.
+- **Retention:** 1 hour counts from when a job **finishes**, not when it started, so a long encode
+  isn't deleted moments after it completes.
+- **Scope:** all 22 tools ship in this batch. They share one job engine, and the tool modules are thin
+  wrappers that build ffmpeg arguments.
+- **Downloads:** the result's name is the original name plus a suffix (`holiday-compressed.mp4`),
+  sent with RFC 5987 `filename*` so non-ASCII names survive.
+- **Subtitle tracks:** there is no "pick a track" step. The browser can't list the tracks inside an MKV/MP4 before upload, and a probe-then-choose step would add a waiting state to every job. Extract takes every text track; burn-in uses the default track. Image-based subtitle tracks (DVD/Blu-ray bitmaps) are skipped with a note, because they can't become SRT.
+- **Several files to a single-file tool:** the browser sends one request per file, so each upload is checked against the limit on its own and each gets its own job.
+- **Header job count:** `/api/health`'s media section includes queued and running counts, so the "Jobs (2 running)" link shows on every device, not just the one that started the job.
+- **Disk check:** the free-space check counts space already promised to queued jobs (their input size again), so ten queued uploads can't each pass the check against the same free space.
+- **Second network layer:** the media service sits on an internal compose network shared only with the core, so it has no route to the internet, behind `-protocol_whitelist`.
+- **HDR / 10-bit phone video:** when the output is H.264 it is tone-mapped to 8-bit SDR (`zscale` + `tonemap`), so "plays everywhere" holds. H.265 output keeps 10-bit.
+- **Priority:** ffmpeg runs under `nice 10`, so the add-on's own API (progress, lists, downloads) stays quick during a long encode.
+- **Results and limits:** results are not capped by `FERROKIT_MAX_UPLOAD_MB` (that is about uploads),
+  only by the free-disk check.
+
+### Non-goals this batch
+- GPU encoding.
+- Moving OCR onto background jobs; it comes next, reusing `jobs`.
+- Keeping running jobs across an add-on restart.
+- Resumable uploads.
+- Per-person job lists (there are no logins).
+- Transcription and auto subtitles, which belong to the AI add-on.
+- Editing on a timeline.
+
+### Done means
+- `docker compose --profile media up -d` brings the add-on up, and it shows in `/api/health` within 15 s.
+- Every tool runs end to end against the running container in `scripts/addons-smoke.sh`, using files
+  generated by ffmpeg (`testsrc2` + `sine`, with MOV/MKV/WebM variants, a subtitle track and silences).
+- The smoke script also checks:
+  - progress rises from 0 to 100;
+  - cancel kills ffmpeg (no ffmpeg process left);
+  - a result disappears after its time (with a test override for the hour);
+  - Range requests return 206;
+  - an HLS-playlist-in-AVI file can't reach the network or local files;
+  - the disk-full guard returns 507.
+- Unit tests cover:
+  - parsing `-progress` output and the percent and time-left maths;
+  - the argument builder for every tool;
+  - time parsing (`1:23.5`) and filter escaping;
+  - the job table's states, expiry, the 50-job cap and the lanes, using a fake ffmpeg script as the
+    Office tests do;
+  - the core proxying `GET` / `DELETE` / Range.
+- Web tests cover the upload / poll / job-card logic and the Jobs page model.
+- The core image is unchanged at about 65 MB, and Office and OCR behave as before.
