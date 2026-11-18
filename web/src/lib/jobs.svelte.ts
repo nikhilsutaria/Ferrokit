@@ -57,24 +57,35 @@ export function follow(id: string, onUpdate: (job: Job | 'gone') => void, addon:
 /**
  * Follow the whole job list (the Jobs page) across `addons()` (asked afresh each time, as add-ons
  * start and stop). Keeps asking every 10 s even when nothing is active, so jobs started on other
- * devices show up.
+ * devices show up. `missing` names add-ons that didn't answer this time.
  */
 export function followAll(
-  onUpdate: (jobs: Job[], now: number) => void,
+  onUpdate: (jobs: Job[], now: number, missing: JobAddon[]) => void,
   onError: (e: unknown) => void,
   addons: () => JobAddon[] = () => ['media'],
 ): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
+  // Every add-on seen ready while following: one that goes down soon drops out of `addons()`, and
+  // still asking it is how its jobs come back named as missing instead of vanishing without a word.
+  const seen = new Set<JobAddon>();
+
   async function tick() {
     if (stopped) return;
+    for (const a of addons()) seen.add(a);
+    if (!seen.size) {
+      // The add-ons' health isn't in yet (the page was opened directly): wait for it, rather than
+      // report an empty list and not look again for 10 s.
+      timer = setTimeout(tick, 500);
+      return;
+    }
     let anyActive = false;
     try {
-      const { jobs, now } = await listJobs(addons());
+      const { jobs, now, missing } = await listJobs([...seen]);
       if (stopped) return;
       anyActive = jobs.some(active);
-      onUpdate(jobs, now);
+      onUpdate(jobs, now, missing);
     } catch (e) {
       onError(e);
     }
@@ -87,7 +98,9 @@ export function followAll(
     void tick();
   };
   if (typeof document !== 'undefined') document.addEventListener('visibilitychange', wake);
-  void tick();
+  // The first check waits a moment: started inside an effect, reading `addons()` straight away would
+  // make the effect rerun (and restart this) on every health refresh.
+  timer = setTimeout(tick, 0);
 
   return () => {
     stopped = true;

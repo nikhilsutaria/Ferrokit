@@ -20,6 +20,7 @@ pub struct Config {
     pub ocr_url: String,
     pub media_url: String,
     /// Largest upload for the media add-on (videos are big); everything else uses `max_upload_mb`.
+    /// Only used until the media add-on reports its own limit in its health.
     pub media_max_upload_mb: usize,
     /// Tests only: a shorter add-on time limit.
     pub addon_limit_override: Option<std::time::Duration>,

@@ -60,10 +60,11 @@ impl Addon {
         }
     }
 
-    /// The largest upload this add-on takes, in MB. Media has its own, bigger limit.
-    pub fn max_upload_mb(self, config: &Config) -> usize {
+    /// The largest upload this add-on takes, in MB. Media has its own, bigger limit, which the add-on
+    /// reports in its health: once it has answered, its value is used, so the limit is set in one place.
+    pub fn max_upload_mb(self, config: &Config, registry: &Registry) -> usize {
         match self {
-            Addon::Media => config.media_max_upload_mb,
+            Addon::Media => registry.reported_upload_mb(self).unwrap_or(config.media_max_upload_mb),
             Addon::Office | Addon::Ocr => config.max_upload_mb,
         }
     }
@@ -85,6 +86,13 @@ impl Registry {
         if let Ok(mut m) = self.0.write() {
             m.insert(addon, status);
         }
+    }
+
+    /// The upload limit a ready add-on reported in its health, in MB.
+    pub fn reported_upload_mb(&self, addon: Addon) -> Option<usize> {
+        let m = self.0.read().ok()?;
+        let s = m.get(&addon).filter(|s| s.ready)?;
+        s.info["maxUploadMb"].as_u64().filter(|&mb| mb > 0).map(|mb| mb as usize)
     }
 
     pub fn mark_down(&self, addon: Addon) {

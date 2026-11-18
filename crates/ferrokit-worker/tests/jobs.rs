@@ -30,7 +30,7 @@ fn writes_result() -> Work {
         Box::pin(async move {
             ctx.progress.set(Some(50.0), 1.0, Some(1));
             std::fs::write(ctx.dir.join("out.txt"), b"done").unwrap();
-            Ok(Finished { file: ctx.dir.join("out.txt"), name: "clip-done.txt".into(), mime: "text/plain" })
+            Ok(Finished { file: ctx.dir.join("out.txt"), name: "clip-done.txt".into(), mime: "text/plain", note: None })
         })
     })
 }
@@ -41,7 +41,7 @@ fn waits_for(go: Arc<Notify>) -> Work {
         Box::pin(async move {
             go.notified().await;
             std::fs::write(ctx.dir.join("out.txt"), b"done").unwrap();
-            Ok(Finished { file: ctx.dir.join("out.txt"), name: "out.txt".into(), mime: "text/plain" })
+            Ok(Finished { file: ctx.dir.join("out.txt"), name: "out.txt".into(), mime: "text/plain", note: None })
         })
     })
 }
@@ -347,4 +347,19 @@ async fn an_unusable_folder_is_an_error_not_full() {
         Err(e) => panic!("wrong error: {e:?}"),
         Ok(_) => panic!("a job folder was made inside a file"),
     }
+}
+
+#[tokio::test]
+async fn a_panicking_job_fails_and_frees_its_lane() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::start(settings(dir.path().join("jobs"))).unwrap();
+    let bad = start(&store, Lane::Video, Box::new(|_ctx: Ctx| Box::pin(async { panic!("boom") })));
+    wait_for(&store, &bad, State::Failed).await;
+    let job = store.get(&bad).unwrap();
+    assert!(job.error.as_deref().unwrap_or("").contains("unexpected error"), "{:?}", job.error);
+    assert!(!dir.path().join("jobs").join(&bad).exists());
+    // The lane is free again: the next job runs.
+    let next = start(&store, Lane::Video, writes_result());
+    wait_for(&store, &next, State::Done).await;
+    assert_eq!(store.counts(), (0, 0));
 }

@@ -242,6 +242,8 @@ check "ocr job: Range download → 206"          j_range
 check "ocr job: cancel stops ocrmypdf"         j_cancel
 check "ocr job: locked pdf → 422 at once"      j_locked
 check "ocr job: not a pdf → 422 at once"       j_not_pdf
+j_limit()   { curl -s "$FERROKIT/api/health" | grep -q '"ocr":{[^}]*"maxUploadMb":[1-9]'; }
+check "ocr job: health gives the upload limit" j_limit
 
 # --- more checks are added by each task ---
 

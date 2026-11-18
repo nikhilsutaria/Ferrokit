@@ -21,7 +21,8 @@ export interface Job {
   processedSecs: number;
   etaSecs: number | null;
   error: string | null;
-  result: { name: string; bytes: number; mime: string } | null;
+  /** `note`: something to know about the result, e.g. subtitle tracks that were left out. */
+  result: { name: string; bytes: number; mime: string; note: string | null } | null;
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
@@ -50,7 +51,9 @@ export function parseJob(v: unknown, addon: JobAddon = 'media'): Job | null {
     : [];
   const r = o.result && typeof o.result === 'object' ? (o.result as Record<string, unknown>) : null;
   const result =
-    r && str(r.name) !== null ? { name: str(r.name)!, bytes: num(r.bytes) ?? 0, mime: str(r.mime) ?? 'application/octet-stream' } : null;
+    r && str(r.name) !== null
+      ? { name: str(r.name)!, bytes: num(r.bytes) ?? 0, mime: str(r.mime) ?? 'application/octet-stream', note: str(r.note) }
+      : null;
   return {
     id,
     addon,
@@ -197,10 +200,10 @@ async function listOne(addon: JobAddon): Promise<{ jobs: Job[]; now: number }> {
 }
 
 /**
- * Every job on the given add-ons, newest first. An add-on that doesn't answer is left out; only if
- * none answers is it an error.
+ * Every job on the given add-ons, newest first. An add-on that doesn't answer is left out and named
+ * in `missing`; only if none answers is it an error.
  */
-export async function listJobs(addons: JobAddon[] = ['media']): Promise<{ jobs: Job[]; now: number }> {
+export async function listJobs(addons: JobAddon[] = ['media']): Promise<{ jobs: Job[]; now: number; missing: JobAddon[] }> {
   const replies = await Promise.allSettled(addons.map(listOne));
   const ok = replies.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
   if (!ok.length && addons.length) {
@@ -208,7 +211,8 @@ export async function listJobs(addons: JobAddon[] = ['media']): Promise<{ jobs: 
     throw first?.reason ?? new ApiError('No add-on answered.');
   }
   const jobs = ok.flatMap((r) => r.jobs).sort((a, b) => b.createdAt - a.createdAt);
-  return { jobs, now: ok[0]?.now ?? Date.now() };
+  const missing = addons.filter((_, i) => replies[i].status === 'rejected');
+  return { jobs, now: ok[0]?.now ?? Date.now(), missing };
 }
 
 /** Cancel a waiting or running job, or dismiss a finished one. */

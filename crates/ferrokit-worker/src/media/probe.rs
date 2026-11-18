@@ -44,6 +44,7 @@ impl Video {
 pub struct Audio {
     pub codec: String,
     pub channels: u32,
+    pub sample_rate: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,7 +146,7 @@ pub fn parse(json: &str) -> Result<Probe, String> {
                 });
             }
             Some("audio") if p.audio.is_none() => {
-                p.audio = Some(Audio { codec, channels: s["channels"].as_u64().unwrap_or(0) as u32 });
+                p.audio = Some(Audio { codec, channels: s["channels"].as_u64().unwrap_or(0) as u32, sample_rate: s["sample_rate"].as_str().and_then(|r| r.parse().ok()) });
             }
             Some("subtitle") => {
                 p.subs.push(Sub {
@@ -195,7 +196,7 @@ mod tests {
       "streams": [
         {"index":0,"codec_name":"h264","codec_type":"video","width":1920,"height":1080,"pix_fmt":"yuv420p",
          "avg_frame_rate":"30000/1001","r_frame_rate":"30000/1001","disposition":{"default":1,"attached_pic":0}},
-        {"index":1,"codec_name":"aac","codec_type":"audio","channels":2,"disposition":{"default":1}},
+        {"index":1,"codec_name":"aac","codec_type":"audio","channels":2,"sample_rate":"44100","disposition":{"default":1}},
         {"index":2,"codec_name":"hdmv_pgs_subtitle","codec_type":"subtitle","tags":{"language":"eng"},"disposition":{"default":0}},
         {"index":3,"codec_name":"subrip","codec_type":"subtitle","tags":{"language":"mri"},"disposition":{"default":1}},
         {"index":4,"codec_name":"mjpeg","codec_type":"video","width":600,"height":600,"disposition":{"attached_pic":1}}
@@ -211,6 +212,7 @@ mod tests {
         assert!((v.fps.unwrap() - 29.97).abs() < 0.01);
         assert!(!v.hdr && !v.ten_bit);
         assert_eq!(p.audio.as_ref().unwrap().codec, "aac");
+        assert_eq!(p.audio.as_ref().unwrap().sample_rate, Some(44100));
         assert_eq!(p.duration, Some(12.5));
         assert_eq!(p.subs.len(), 2);
         assert!(!p.subs[0].text, "PGS is pictures");

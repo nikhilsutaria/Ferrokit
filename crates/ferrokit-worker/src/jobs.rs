@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::future::BoxFuture;
+use futures_util::FutureExt;
 use serde::Serialize;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -71,6 +72,9 @@ pub struct ResultInfo {
     pub name: String,
     pub bytes: u64,
     pub mime: &'static str,
+    /// Something the person should know about the result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// What a finished piece of work produced: a file inside its job folder.
@@ -78,6 +82,7 @@ pub struct Finished {
     pub file: PathBuf,
     pub name: String,
     pub mime: &'static str,
+    pub note: Option<String>,
 }
 
 /// The work a job does, given its folder, a progress sink and a cancel signal.
@@ -363,9 +368,22 @@ impl Store {
             };
             let store = self.clone();
             let limit = self.settings.limit;
+            let id_for_log = id.clone();
             tokio::spawn(async move {
                 let outcome = {
-                    let fut = work(ctx);
+                    // A panic in the work is caught and reported as a failure: otherwise this task would
+                    // die without calling `finish`, and the lane would stay full until a restart.
+                    let fut = async move {
+                        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(ctx)));
+                        match caught {
+                            Ok(fut) => std::panic::AssertUnwindSafe(fut).catch_unwind().await,
+                            Err(e) => Err(e),
+                        }
+                        .unwrap_or_else(|_| {
+                            tracing::error!("job {} panicked", id_for_log);
+                            Err("The job stopped with an unexpected error.".to_string())
+                        })
+                    };
                     tokio::select! {
                         r = tokio::time::timeout(limit, fut) => Some(r),
                         _ = cancel.cancelled() => None,
@@ -400,7 +418,7 @@ impl Store {
                 keep_only(&dir, &done.file);
                 job.state = State::Done;
                 job.percent = Some(100.0);
-                job.result = Some((done.file, ResultInfo { name: done.name, bytes, mime: done.mime }));
+                job.result = Some((done.file, ResultInfo { name: done.name, bytes, mime: done.mime, note: done.note }));
             }
             Some(Ok(Err(message))) => {
                 job.state = State::Failed;

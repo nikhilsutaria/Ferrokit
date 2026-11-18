@@ -55,6 +55,8 @@ pub struct Plan {
     pub output: Out,
     /// Small files (fixed name, contents) written into the job folder first, e.g. a merge list.
     pub files: Vec<(String, String)>,
+    /// Something the person should know about the result, shown on its card.
+    pub note: Option<String>,
 }
 
 /// The 22 media tools.
@@ -114,6 +116,33 @@ pub fn check_streams(op: &str, inputs: &[Input]) -> Result<(), ApiError> {
 /// The file extension of a fixed input name (`in-1.mov` → `mov`).
 pub fn ext_of(file: &str) -> &str {
     file.rsplit_once('.').map(|(_, e)| e).unwrap_or("bin")
+}
+
+/// Extensions ffmpeg picks the right muxer from, for a stream copy into the upload's own container.
+const WRITABLE: &[&str] = &["mp4", "mov", "mkv", "webm", "avi", "ts", "m2ts", "mts", "flv", "mpg", "mpeg", "wmv", "asf", "3gp", "3g2"];
+
+/// The container for a result that keeps the upload's streams as they are: the upload's own
+/// extension when ffmpeg can write it, else one matching what ffprobe found. Matroska is the fallback,
+/// since it holds almost any codec.
+pub fn kept_ext(i: &Input) -> &str {
+    let ext = ext_of(&i.file);
+    if WRITABLE.contains(&ext) {
+        return ext;
+    }
+    let is = |name: &str| i.probe.formats.iter().any(|f| f == name);
+    if is("mp4") || is("mov") {
+        "mp4"
+    } else if is("avi") {
+        "avi"
+    } else if is("mpegts") {
+        "ts"
+    } else if is("flv") {
+        "flv"
+    } else if is("mpeg") {
+        "mpg"
+    } else {
+        "mkv"
+    }
 }
 
 /// `holiday.mov` + `-muted` + `mp4` → `holiday-muted.mp4`.

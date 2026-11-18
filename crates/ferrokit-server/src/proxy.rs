@@ -105,7 +105,7 @@ pub async fn forward(
     req: Request,
     timeout: std::time::Duration,
 ) -> Result<Response, ApiError> {
-    let limit = addon.max_upload_mb(&state.config) * 1024 * 1024;
+    let limit = addon.max_upload_mb(&state.config, &state.addons) * 1024 * 1024;
     let length = req.headers().get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<usize>().ok());
     if length.is_some_and(|n| n > limit) {
         return Err(ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "That upload is bigger than the server allows."));

@@ -7,7 +7,7 @@ use ferrokit_http::ApiError;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::plan::{download_name, ext_of, mime, n, opts, range, Input, Out, Plan, Step};
+use super::plan::{download_name, kept_ext, mime, n, opts, range, Input, Out, Plan, Step};
 use super::probe::Video;
 use crate::jobs::Lane;
 
@@ -94,7 +94,7 @@ fn file_out(ext: &str, original: &str, suffix: &str) -> Out {
 }
 
 fn single(lane: Lane, expected: Option<f64>, args: Vec<String>, output: Out) -> Plan {
-    Plan { lane, expected_secs: expected, steps: vec![Step::Run(args)], output, files: vec![] }
+    Plan { lane, expected_secs: expected, steps: vec![Step::Run(args)], output, files: vec![], note: None }
 }
 
 fn input_args(i: &Input) -> Vec<String> {
@@ -116,7 +116,7 @@ pub fn plan(op: &str, options: Value, inputs: &[Input], subtitle: Option<&str>) 
         "video-speed" => speed(opts(options)?, first),
         "video-mute" => {
             let _: Empty = opts(options)?;
-            let ext = ext_of(&first.file);
+            let ext = kept_ext(first);
             let mut a = input_args(first);
             a.extend(s(&["-map", "0:v:0", "-c", "copy", "-an", &format!("out.{ext}")]));
             Ok(single(Lane::Video, first.probe.duration, a, file_out(ext, &first.name, "-muted")))
@@ -280,7 +280,7 @@ fn trim(o: TrimOpts, i: &Input) -> Result<Plan, ApiError> {
     }
     let expected = end.map(|e| e - start);
     if o.fast {
-        let ext = ext_of(&i.file);
+        let ext = kept_ext(i);
         let mut args = times;
         args.extend(input_args(i));
         args.extend(av_maps());
@@ -305,7 +305,8 @@ fn merge(inputs: &[Input]) -> Result<Plan, ApiError> {
     }
     let durations: Option<f64> = inputs.iter().map(|i| i.probe.duration).sum();
     let v0 = video_of(&inputs[0]);
-    let a0 = inputs[0].probe.audio.as_ref().map(|a| a.codec.clone());
+    // Stream copy needs the sound to match too: codec, sample rate and channels.
+    let a0 = inputs[0].probe.audio.clone();
     let same = inputs.iter().all(|i| {
         let v = video_of(i);
         v.codec == v0.codec
@@ -314,11 +315,11 @@ fn merge(inputs: &[Input]) -> Result<Plan, ApiError> {
                 (Some(a), Some(b)) => (a - b).abs() <= 0.01,
                 (a, b) => a == b,
             }
-            && i.probe.audio.as_ref().map(|a| a.codec.clone()) == a0
+            && i.probe.audio == a0
             && !v.hdr
     });
     if same {
-        let ext = ext_of(&inputs[0].file);
+        let ext = kept_ext(&inputs[0]);
         // The list names only our own fixed file names.
         let list: String = inputs.iter().map(|i| format!("file '{}'\n", i.file)).collect();
         let mut args = s(&["-f", "concat", "-safe", "1", "-i", "list.txt", "-c", "copy"]);
@@ -332,13 +333,17 @@ fn merge(inputs: &[Input]) -> Result<Plan, ApiError> {
             steps: vec![Step::Run(args)],
             output: Out::File { name: format!("out.{ext}"), download: format!("merged.{ext}"), mime: mime(ext) },
             files: vec![("list.txt".into(), list)],
+            note: None,
         });
     }
 
     let (w, h) = v0.display_size();
     let (w, h) = (even(w), even(h));
     let fps = v0.fps.map(n).unwrap_or_else(|| "30".into());
-    let sound = inputs.iter().all(|i| i.probe.audio.is_some());
+    // Clips without sound get silence of their own length, so one silent clip doesn't mute the rest.
+    // A silent clip whose length is unknown can't be padded; then the result has no sound.
+    let sound = inputs.iter().any(|i| i.probe.audio.is_some())
+        && inputs.iter().all(|i| i.probe.audio.is_some() || i.probe.duration.is_some());
     let mut args = Vec::new();
     let mut graph = Vec::new();
     let mut joins = String::new();
@@ -350,7 +355,11 @@ fn merge(inputs: &[Input]) -> Result<Plan, ApiError> {
         ));
         joins.push_str(&format!("[v{k}]"));
         if sound {
-            graph.push(format!("[{k}:a]aresample=48000,aformat=channel_layouts=stereo[a{k}]"));
+            match (&i.probe.audio, i.probe.duration) {
+                (Some(_), _) => graph.push(format!("[{k}:a]aresample=48000,aformat=channel_layouts=stereo[a{k}]")),
+                (None, Some(d)) => graph.push(format!("anullsrc=r=48000:cl=stereo,atrim=duration={}[a{k}]", n(d))),
+                (None, None) => unreachable!("`sound` needs every silent clip's length"),
+            }
             joins.push_str(&format!("[a{k}]"));
         }
     }
@@ -372,6 +381,7 @@ fn merge(inputs: &[Input]) -> Result<Plan, ApiError> {
         steps: vec![Step::Run(args)],
         output: Out::File { name: "out.mp4".into(), download: "merged.mp4".into(), mime: mime("mp4") },
         files: vec![],
+        note: None,
     })
 }
 
@@ -628,6 +638,7 @@ fn gif(o: GifOpts, i: &Input) -> Result<Plan, ApiError> {
         steps: vec![Step::Run(p1), Step::Run(p2)],
         output: file_out("gif", &i.name, ""),
         files: vec![],
+        note: None,
     })
 }
 
@@ -672,6 +683,7 @@ fn stabilise(o: StabiliseOpts, i: &Input) -> Result<Plan, ApiError> {
         steps: vec![Step::Run(p1), Step::Run(p2)],
         output: file_out("mp4", &i.name, "-stabilised"),
         files: vec![],
+        note: None,
     })
 }
 
@@ -739,7 +751,14 @@ fn subtitles(o: SubOpts, i: &Input, uploaded: Option<&str>) -> Result<Plan, ApiE
             } else {
                 Out::Zip { prefix: "sub-", download: download_name(&i.name, "-subtitles", "zip") }
             };
-            Ok(single(Lane::Video, i.probe.duration, args, output))
+            let mut p = single(Lane::Video, i.probe.duration, args, output);
+            let pictures = i.probe.subs.len() - text.len();
+            p.note = match pictures {
+                0 => None,
+                1 => Some("1 picture subtitle track (DVD/Blu-ray style) was left out: it can't be turned into text.".into()),
+                n => Some(format!("{n} picture subtitle tracks (DVD/Blu-ray style) were left out: they can't be turned into text.")),
+            };
+            Ok(p)
         }
     }
 }

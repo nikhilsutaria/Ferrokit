@@ -2,9 +2,9 @@
   // Every background job on the server (video and audio from the Media add-on, "Make PDF searchable"
   // from the OCR add-on), newest first, for everyone on the network.
   import { onDestroy } from 'svelte';
-  import { addons, jobAddons, refreshAddons } from '$lib/addons.svelte';
+  import { ADDON_LABEL, addons, jobAddons, refreshAddons } from '$lib/addons.svelte';
   import { followAll } from '$lib/jobs.svelte';
-  import type { Job } from '$lib/media';
+  import type { Job, JobAddon } from '$lib/media';
   import CopyButton from '$lib/ui/CopyButton.svelte';
   import JobCard from '$lib/ui/JobCard.svelte';
 
@@ -15,13 +15,16 @@
   let now = $state(Date.now());
   let loaded = $state(false);
   let error = $state<string | null>(null);
+  /** Add-ons that didn't answer the last check: their jobs aren't in the list. */
+  let missing = $state<JobAddon[]>([]);
   let stop: (() => void) | null = null;
 
   $effect(() => {
     stop = followAll(
-      (list, serverNow) => {
+      (list, serverNow, notAnswering) => {
         jobs = list;
         now = serverNow;
+        missing = notAnswering;
         loaded = true;
         error = null;
       },
@@ -60,6 +63,11 @@
     {#if error}
       <p class="error" role="alert">{error}</p>
     {/if}
+    {#each missing as addon (addon)}
+      <p class="hint" role="status">
+        The {ADDON_LABEL[addon]} isn’t answering, so its jobs aren’t shown. They’ll be back when it is, unless it restarted.
+      </p>
+    {/each}
     {#if !loaded}
       <p class="hint">Loading…</p>
     {:else if jobs.length === 0}

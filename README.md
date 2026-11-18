@@ -32,7 +32,7 @@ Then open `http://<server-ip>:8080`. The image is about 65 MB (a 19 MB download)
 | `FERROKIT_OFFICE_URL` | `http://ferrokit-office:8090` | Where the Office add-on lives |
 | `FERROKIT_OCR_URL` | `http://ferrokit-ocr:8090` | Where the OCR add-on lives |
 | `FERROKIT_MEDIA_URL` | `http://ferrokit-media:8090` | Where the Media add-on lives |
-| `FERROKIT_MEDIA_MAX_UPLOAD_MB` | `10240` | Largest upload to the media tools (only they get the bigger limit). Set the same value on the `ferrokit-media` service |
+| `FERROKIT_MEDIA_MAX_UPLOAD_MB` | `10240` | Largest upload to the media tools, used only until the Media add-on has answered: after that the core follows the limit set on the `ferrokit-media` service |
 
 Memory: a server job holds the upload, the result and qpdf's working copy, so plan for about
 three times the size of the biggest file people process. The default 2 GB tmpfs covers PDFs up to a few hundred MB.
@@ -297,7 +297,7 @@ Times in options are seconds. Values out of range get a 422.
 | `extract-audio` | `format` (`mp3`/`m4a`/`wav`/`flac`/`ogg`) |
 | `video-gif` | `start`, `length` (0.5–30), `width` (120–1280, default 480), `fps` (5–30, default 12) |
 | `video-stabilise` | `strength` (`light`/`medium`/`strong`) |
-| `subtitles` | `mode` (`burn`/`extract`); burn uses an uploaded `subtitle` (.srt/.ass/.ssa/.vtt) or the video's default text track; extract gives an .srt, or a ZIP for several tracks |
+| `subtitles` | `mode` (`burn`/`extract`); burn uses an uploaded `subtitle` (.srt/.ass/.ssa/.vtt) or the video's default text track; extract gives an .srt, or a ZIP for several tracks (picture tracks are left out, with a note on the result). Uploaded subtitles that aren't UTF-8 are read as Windows-1252 |
 | `video-thumbnails` | `count` (1–100, default 12), `sheet` (one contact-sheet JPEG instead of a ZIP of frames), `columns` (1–10, default 4) |
 | `audio-convert` | `format` (`mp3`/`m4a`/`ogg`/`flac`/`wav`), `bitrate` (96–320 kbit/s, default 192) |
 | `audio-trim` | `start`, `end` |

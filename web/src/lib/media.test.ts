@@ -73,6 +73,12 @@ describe('parsing jobs', () => {
     expect(j.inputs[0].name).toBe('holiday.mov');
   });
 
+  it('keeps a note on the result, when there is one', () => {
+    const note = '1 picture subtitle track (DVD/Blu-ray style) was left out.';
+    expect(parseJob(job({ result: { name: 'a.zip', bytes: 5, mime: 'application/zip', note } }))!.result?.note).toBe(note);
+    expect(parseJob(job({ result: { name: 'a.mp4', bytes: 5, mime: 'video/mp4' } }))!.result?.note).toBeNull();
+  });
+
   it('rejects odd ones', () => {
     expect(parseJob(job({ id: undefined }))).toBeNull();
     expect(parseJob(job({ id: 'XYZ' }))).toBeNull();
@@ -194,9 +200,10 @@ describe('server calls', () => {
           return new Response('', { status: 404 });
         }),
       );
-      const { jobs, now } = await listJobs(['media', 'ocr']);
+      const { jobs, now, missing } = await listJobs(['media', 'ocr']);
       expect(jobs.map((j) => [j.addon, j.createdAt])).toEqual([['ocr', 7], ['media', 5]]);
       expect(now).toBe(9);
+      expect(missing).toEqual([]);
 
       vi.stubGlobal(
         'fetch',
@@ -206,7 +213,9 @@ describe('server calls', () => {
             : new Response(JSON.stringify({ jobs: [job()], now: 9 }), { status: 200 }),
         ),
       );
-      expect((await listJobs(['media', 'ocr'])).jobs.map((j) => j.addon)).toEqual(['media']);
+      const partial = await listJobs(['media', 'ocr']);
+      expect(partial.jobs.map((j) => j.addon)).toEqual(['media']);
+      expect(partial.missing).toEqual(['ocr']);
 
       vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"down"}', { status: 503 })));
       await expect(listJobs(['media', 'ocr'])).rejects.toThrow();

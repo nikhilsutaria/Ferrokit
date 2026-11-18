@@ -181,11 +181,13 @@ pub struct Progress {
     last: f64,
     /// When OCR was first seen, and how many pages were done then: the rate gives the time left.
     ocr_from: Option<(f64, f64)>,
+    /// When OCR finished, and how quickly the bar creeps after it (seconds per step towards 99 %).
+    finishing: Option<(f64, f64)>,
 }
 
 impl Progress {
     pub fn new() -> Self {
-        Self { last: 0.0, ocr_from: None }
+        Self { last: 0.0, ocr_from: None, finishing: None }
     }
 
     /// Feed one line of OCRmyPDF's output, `secs` after the job started. Returns the new percent
@@ -218,8 +220,25 @@ impl Progress {
                 }
                 Some(_) => {}
             }
+            if fraction >= 1.0 && self.finishing.is_none() {
+                // The finishing work (PDF/A above all) takes a fair share of the OCR time.
+                let ocr_secs = secs - self.ocr_from.map_or(secs, |(t0, _)| t0);
+                self.finishing = Some((secs, (ocr_secs * 0.3).max(3.0)));
+            }
         }
         Some((self.last, eta))
+    }
+}
+
+impl Progress {
+    /// Called when OCRmyPDF has been quiet for a while: once OCR is done, the new percent. Its last
+    /// steps (PDF/A conversion above all) print nothing, so the bar creeps towards 99 % instead of
+    /// waiting at 90 %, slowing as it goes.
+    pub fn tick(&mut self, secs: f64) -> Option<(f64, Option<u64>)> {
+        let (since, pace) = self.finishing?;
+        let creep = 90.0 + 9.0 * (1.0 - (-(secs - since).max(0.0) / pace).exp());
+        self.last = self.last.max(creep.min(98.9));
+        Some((self.last, None))
     }
 }
 
@@ -243,11 +262,15 @@ pub async fn run_job(programs: OcrPrograms, args: Vec<String>, name: String, tex
     // and removed with the job even when a cancel kills OCRmyPDF before it can tidy up.
     let scratch = ctx.dir.join("tmp");
     std::fs::create_dir_all(&scratch).map_err(|e| format!("Couldn't make the job's scratch folder: {e}"))?;
-    cmd.current_dir(&ctx.dir)
-        .env("TMPDIR", &scratch)
-        .arg("--plugin")
-        .arg(&programs.plugin)
-        .args(&args)
+    cmd.current_dir(&ctx.dir).env("TMPDIR", &scratch);
+    // Without the plugin OCRmyPDF would refuse to start, so a missing one costs the percentage only.
+    let plugin = programs.plugin.is_file();
+    if plugin {
+        cmd.arg("--plugin").arg(&programs.plugin);
+    } else {
+        tracing::warn!("the OCR progress plugin is missing ({}); jobs show no percentage", programs.plugin.display());
+    }
+    cmd.args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -278,9 +301,27 @@ pub async fn run_job(programs: OcrPrograms, args: Vec<String>, name: String, tex
 
     let mut lines = BufReader::new(stdout).lines();
     let mut progress = Progress::new();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if let Some((percent, eta)) = progress.feed(&line, started.elapsed().as_secs_f64()) {
-            ctx.progress.set(Some(percent), 0.0, eta);
+    if !plugin {
+        ctx.progress.set(None, 0.0, None);
+    }
+    loop {
+        tokio::select! {
+            line = lines.next_line() => {
+                let Ok(Some(line)) = line else { break };
+                if let Some((percent, eta)) = progress.feed(&line, started.elapsed().as_secs_f64()) {
+                    ctx.progress.set(Some(percent), 0.0, eta);
+                }
+            }
+            // Quiet for a second: let the bar creep through the silent finishing steps, or (without
+            // the plugin) show the time spent so far.
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                let secs = started.elapsed().as_secs_f64();
+                if !plugin {
+                    ctx.progress.set(None, secs, None);
+                } else if let Some((percent, eta)) = progress.tick(secs) {
+                    ctx.progress.set(Some(percent), 0.0, eta);
+                }
+            }
         }
     }
     let status = child.wait().await.map_err(|e| format!("OCRmyPDF stopped unexpectedly: {e}"))?;
@@ -296,10 +337,10 @@ pub async fn run_job(programs: OcrPrograms, args: Vec<String>, name: String, tex
     }
     let stem = crate::out::stem(&name);
     if !text {
-        return Ok(Finished { file: pdf, name: format!("{stem}-ocr.pdf"), mime: "application/pdf" });
+        return Ok(Finished { file: pdf, name: format!("{stem}-ocr.pdf"), mime: "application/pdf", note: None });
     }
     let zip = zip_result(&ctx.dir, &pdf, &stem).map_err(|e| format!("Couldn't pack the result: {e}"))?;
-    Ok(Finished { file: zip, name: format!("{stem}-ocr.zip"), mime: "application/zip" })
+    Ok(Finished { file: zip, name: format!("{stem}-ocr.zip"), mime: "application/zip", note: None })
 }
 
 /// How much of OCRmyPDF's error output is kept for the log.
@@ -345,6 +386,27 @@ mod tests {
         assert!((pc - 94.5).abs() < 1e-9, "{pc}");
         let (pc, _) = p.feed("FERROKIT-PROGRESS 4 9 PNGs", 25.0).unwrap();
         assert!(pc <= 99.9, "{pc}");
+    }
+
+    /// OCRmyPDF says nothing while it converts to PDF/A, so after OCR the bar creeps towards 99 %
+    /// at a pace set by how long OCR took, never reaching it.
+    #[test]
+    fn the_bar_creeps_while_finishing_says_nothing() {
+        let mut p = Progress::new();
+        assert_eq!(p.tick(1.0), None, "nothing to creep before OCR has finished");
+        p.feed("FERROKIT-PROGRESS 10 0 OCR", 0.0);
+        p.feed("FERROKIT-PROGRESS 10 5 OCR", 10.0);
+        assert_eq!(p.tick(15.0), None, "no creeping during OCR, which has its own progress");
+        p.feed("FERROKIT-PROGRESS 10 10 OCR", 20.0);
+        let a = p.tick(21.0).expect("creeps").0;
+        let b = p.tick(26.0).expect("creeps").0;
+        let c = p.tick(600.0).expect("creeps").0;
+        assert!(90.0 < a && a < b && b < c && c < 99.0, "{a} {b} {c}");
+        // A good part of the way after about a third of the OCR time.
+        assert!((b - 90.0) > 3.0, "{b}");
+        // A real progress line still counts, and the bar never goes back.
+        let (pc, _) = p.feed("FERROKIT-PROGRESS 100 10 Linearizing", 601.0).unwrap();
+        assert!(pc >= c, "{pc} {c}");
     }
 
     #[test]

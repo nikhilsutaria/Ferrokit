@@ -33,7 +33,7 @@ fn file_out(ext: &str, original: &str, suffix: &str) -> Out {
 }
 
 fn single(expected: Option<f64>, args: Vec<String>, output: Out) -> Plan {
-    Plan { lane: Lane::Audio, expected_secs: expected, steps: vec![Step::Run(args)], output, files: vec![] }
+    Plan { lane: Lane::Audio, expected_secs: expected, steps: vec![Step::Run(args)], output, files: vec![], note: None }
 }
 
 /// `-i in -map 0:a:0 -vn -af <filter> <codec> out.<ext>` for the one-filter tools.
@@ -298,6 +298,7 @@ fn normalise(o: NormaliseOpts, i: &Input) -> Result<Plan, ApiError> {
         steps: vec![Step::RunThen(first, then)],
         output: file_out(ext, &i.name, "-normalised"),
         files: vec![],
+        note: None,
     })
 }
 

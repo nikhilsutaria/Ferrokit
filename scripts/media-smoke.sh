@@ -140,6 +140,19 @@ check "video to GIF"                               t_gif
 check "stabilise"                                  t_stabilise
 check "extract subtitles to SRT"                   t_subs_extract
 check "burn in an uploaded SRT"                    t_subs_burn
+t_merge_sound() { run video-merge '{}' merged3.mp4 noaudio.mp4 clip.mp4 && [ "$(probe merged3.mp4 stream=codec_name a:0)" = aac ] && near "$(duration merged3.mp4)" 14 0.3; }
+t_noext() { cp clip.mp4 clipnoext && run video-mute '{}' noext-muted.mp4 clipnoext && [ "$(probe noext-muted.mp4 stream=codec_name)" = h264 ]; }
+t_subs_1252() {
+  printf '1\r\n00:00:01,000 --> 00:00:03,000\r\nCaf\351 \223ol\341\224\r\n' > subs-1252.srt
+  local code id
+  code=$(curl -s -o start.json -w '%{http_code}' -F "file=@noaudio.mp4" -F "subtitle=@subs-1252.srt" -F 'options={"mode":"burn"}' "$FERROKIT/api/media/subtitles")
+  [ "$code" = 202 ] || { cat start.json; return 1; }
+  id=$(sed -n 's/.*"id":"\([0-9a-f]\{32\}\)".*/\1/p' start.json)
+  [ "$(wait_done "$id")" = done ]
+}
+check "merging a silent clip keeps the other's sound" t_merge_sound
+check "a file without an extension can be muted"   t_noext
+check "burn in a Windows-1252 SRT"                 t_subs_1252
 check "thumbnails as 6 frames in a ZIP"            t_frames
 check "thumbnails as a contact sheet"              t_sheet
 

@@ -18,7 +18,7 @@ fn input(file: &str, v: Option<Video>, acodec: Option<&str>, dur: Option<f64>) -
             formats: vec![],
             duration: dur,
             video: v,
-            audio: acodec.map(|c| Audio { codec: c.into(), channels: 2 }),
+            audio: acodec.map(|c| Audio { codec: c.into(), channels: 2, sample_rate: Some(48000) }),
             subs: vec![],
         },
     }
@@ -180,10 +180,85 @@ fn merge_mismatch_uses_scale_pad_concat() {
     let p = ok("video-merge", json!({}), &[a, b]);
     let r = one(&p);
     assert!(r.contains("[1:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v1]"), "{r}");
-    assert!(r.contains("[v0][v1]concat=n=2:v=1:a=0[v]"), "a clip without sound means no sound at all: {r}");
-    assert!(r.contains("-map [v]") && !r.contains("-map [a]"), "{r}");
+    assert!(r.contains("[0:a]aresample=48000,aformat=channel_layouts=stereo[a0]"), "{r}");
+    assert!(r.contains("anullsrc=r=48000:cl=stereo,atrim=duration=10[a1]"), "the silent clip gets silence: {r}");
+    assert!(r.contains("[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"), "{r}");
+    assert!(r.contains("-map [v] -map [a]"), "{r}");
     assert!(p.files.is_empty());
     assert_eq!(out_name(&p).1, "merged.mp4");
+}
+
+#[test]
+fn merge_of_silent_clips_has_no_sound() {
+    let a = input("in-1.mp4", Some(video("h264", 1920, 1080)), None, Some(5.0));
+    let b = input("in-2.mp4", Some(video("h264", 1280, 720)), None, Some(10.0));
+    let r = one(&ok("video-merge", json!({}), &[a, b]));
+    assert!(r.contains("[v0][v1]concat=n=2:v=1:a=0[v]") && !r.contains("anullsrc"), "{r}");
+}
+
+#[test]
+fn merge_drops_sound_when_a_silent_clip_has_no_known_length() {
+    let a = clip();
+    let b = input("in-2.mp4", Some(video("h264", 1280, 720)), None, None);
+    let r = one(&ok("video-merge", json!({}), &[a, b]));
+    assert!(r.contains("concat=n=2:v=1:a=0[v]") && !r.contains("-map [a]"), "{r}");
+}
+
+#[test]
+fn fast_merge_needs_matching_sample_rates() {
+    let a = clip();
+    let mut b = clip();
+    b.file = "in-2.mov".into();
+    b.probe.audio.as_mut().unwrap().sample_rate = Some(44100);
+    let r = one(&ok("video-merge", json!({}), &[a, b]));
+    assert!(!r.contains("-c copy") && r.contains("concat=n=2:v=1:a=1"), "{r}");
+}
+
+#[test]
+fn fast_merge_needs_matching_channels() {
+    let a = clip();
+    let mut b = clip();
+    b.file = "in-2.mov".into();
+    b.probe.audio.as_mut().unwrap().channels = 1;
+    let r = one(&ok("video-merge", json!({}), &[a, b]));
+    assert!(!r.contains("-c copy"), "{r}");
+}
+
+#[test]
+fn mute_of_a_file_without_an_extension_picks_the_container_from_the_probe() {
+    let mut i = input("in-1.bin", Some(video("h264", 1920, 1080)), Some("aac"), Some(60.0));
+    i.name = "holiday".into();
+    i.probe.formats = vec!["mov".into(), "mp4".into(), "m4a".into(), "3gp".into(), "3g2".into(), "mj2".into()];
+    let p = ok("video-mute", json!({}), &[i]);
+    assert!(one(&p).ends_with("out.mp4"), "{}", one(&p));
+    assert_eq!(out_name(&p), ("out.mp4".to_string(), "holiday-muted.mp4".to_string()));
+}
+
+#[test]
+fn fast_trim_of_an_odd_extension_falls_back_to_matroska() {
+    let mut i = input("in-1.bin", Some(video("h264", 1920, 1080)), Some("aac"), Some(60.0));
+    i.probe.formats = vec!["nut".into()];
+    let p = ok("video-trim", json!({"start": 1, "end": 5, "fast": true}), &[i]);
+    assert!(one(&p).ends_with("out.mkv"), "{}", one(&p));
+}
+
+#[test]
+fn fast_merge_of_files_without_extensions_keeps_a_real_container() {
+    let mut a = input("in-1.bin", Some(video("h264", 1920, 1080)), Some("aac"), Some(60.0));
+    a.probe.formats = vec!["matroska".into(), "webm".into()];
+    let mut b = a.clone();
+    b.file = "in-2.bin".into();
+    let p = ok("video-merge", json!({}), &[a, b]);
+    assert!(one(&p).ends_with("out.mkv"), "{}", one(&p));
+    assert_eq!(out_name(&p).1, "merged.mkv");
+}
+
+#[test]
+fn a_known_extension_is_kept_whatever_the_probe_says() {
+    let mut i = clip();
+    i.probe.formats = vec!["mov".into(), "mp4".into()];
+    let p = ok("video-mute", json!({}), &[i]);
+    assert!(one(&p).ends_with("out.mov"), "{}", one(&p));
 }
 
 #[test]
@@ -345,6 +420,21 @@ fn subtitles_extract_one_or_many() {
     ])]);
     assert_eq!(one(&p), "-i in-1.mkv -map 0:s:0 -c:s srt sub-1-eng.srt -map 0:s:2 -c:s srt sub-3-und.srt");
     assert_eq!(out_name(&p), ("sub-".into(), "holiday-subtitles.zip".into()));
+}
+
+#[test]
+fn subtitles_extract_notes_the_picture_tracks_it_left_out() {
+    let p = ok("subtitles", json!({"mode": "extract"}), &[with_subs(vec![
+        sub(0, "subrip", true, false, Some("eng")),
+        sub(1, "dvd_subtitle", false, false, Some("fra")),
+        sub(2, "hdmv_pgs_subtitle", false, false, None),
+    ])]);
+    let note = p.note.expect("a note about the skipped tracks");
+    assert!(note.contains("2 picture subtitle tracks"), "{note}");
+    let p = ok("subtitles", json!({"mode": "extract"}), &[with_subs(vec![sub(0, "subrip", true, false, None), sub(1, "dvd_subtitle", false, false, None)])]);
+    assert!(p.note.unwrap().contains("1 picture subtitle track "));
+    let p = ok("subtitles", json!({"mode": "extract"}), &[with_subs(vec![sub(0, "subrip", true, false, None)])]);
+    assert_eq!(p.note, None);
 }
 
 #[test]

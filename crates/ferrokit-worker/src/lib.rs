@@ -122,6 +122,7 @@ fn ocr_health(s: &AppState) -> serde_json::Value {
         v["running"] = json!(running);
         v["queued"] = json!(queued);
         v["freeBytes"] = json!(o.free_bytes());
+        v["maxUploadMb"] = json!(o.max_upload / (1024 * 1024));
     }
     v["ops"] = json!(ops);
     v

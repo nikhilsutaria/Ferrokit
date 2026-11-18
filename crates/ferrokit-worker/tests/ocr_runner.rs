@@ -14,6 +14,8 @@ use ferrokit_worker::ocrjob::{run_job, OcrPrograms};
 /// `$DIR/sleep` says, then writes out.pdf (and out.txt when asked) and exits with `$DIR/code`.
 const OCRMYPDF: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "@DIR@/args.txt"
+# Like OCRmyPDF, a --plugin that isn't there is an error.
+[ "$1" = "--plugin" ] && { [ -f "$2" ] || { echo "plugin not found: $2" >&2; exit 2; }; }
 echo "FERROKIT-PROGRESS 4 4 Scanning contents"
 echo "FERROKIT-PROGRESS 4 0 OCR"
 sleep "$(cat "@DIR@/sleep" 2>/dev/null || echo 0)"
@@ -45,6 +47,7 @@ fn rig() -> Rig {
     let tmp = tempfile::tempdir().unwrap();
     let fakes = tmp.path().join("fakes");
     std::fs::create_dir_all(&fakes).unwrap();
+    std::fs::write(fakes.join("plugin.py"), "# stand-in").unwrap();
     let programs = OcrPrograms { ocrmypdf: script(&fakes, "ocrmypdf", OCRMYPDF), plugin: fakes.join("plugin.py"), nice: false };
     let store = Store::start(Settings {
         dir: tmp.path().join("jobs"),
@@ -190,4 +193,16 @@ sleep 30
     assert!(scratch.join("ocrmypdf.io.x").exists());
     assert!(r.store.delete(&id).await);
     assert!(!scratch.exists(), "the scratch folder went with the job");
+}
+
+/// Without the progress plugin (a damaged image), jobs still run, just without a percentage.
+#[tokio::test]
+async fn a_missing_plugin_runs_without_it() {
+    let r = rig();
+    std::fs::remove_file(r.fakes.join("plugin.py")).unwrap();
+    let id = start(&r, false);
+    let (_, job) = follow(&r, &id).await;
+    assert_eq!(job.state, State::Done, "{:?}", job.error);
+    let args = std::fs::read_to_string(r.fakes.join("args.txt")).unwrap();
+    assert!(!args.contains("--plugin"), "{args}");
 }

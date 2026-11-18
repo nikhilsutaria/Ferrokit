@@ -10,7 +10,7 @@ fn track(file: &str, codec: &str, dur: Option<f64>) -> Input {
     Input {
         file: file.into(),
         name: format!("song.{}", file.rsplit('.').next().unwrap()),
-        probe: Probe { formats: vec![], duration: dur, video: None, audio: Some(Audio { codec: codec.into(), channels: 2 }), subs: vec![] },
+        probe: Probe { formats: vec![], duration: dur, video: None, audio: Some(Audio { codec: codec.into(), channels: 2, sample_rate: Some(48000) }), subs: vec![] },
     }
 }
 

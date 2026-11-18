@@ -16,7 +16,7 @@ services:
       # FERROKIT_OFFICE_URL: "http://ferrokit-office:8090"   # where the add-ons live (defaults shown)
       # FERROKIT_OCR_URL: "http://ferrokit-ocr:8090"
       # FERROKIT_MEDIA_URL: "http://ferrokit-media:8090"
-      # FERROKIT_MEDIA_MAX_UPLOAD_MB: "10240"   # largest video upload (media add-on only)
+      # FERROKIT_MEDIA_MAX_UPLOAD_MB: "10240"   # only until the media add-on reports its own limit
     # Uploads and scratch files live in RAM and vanish on restart.
     tmpfs:
       - /tmp:size=2g

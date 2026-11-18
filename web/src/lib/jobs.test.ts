@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { follow, nextDelay } from './jobs.svelte';
+import { follow, followAll, nextDelay } from './jobs.svelte';
 
 const ID = '0123456789abcdef0123456789abcdef';
 
@@ -91,5 +91,88 @@ describe('following a job', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(fetch.mock.calls[0][0]).toBe(`/api/ocr/jobs/${ID}`);
     expect(seen).toEqual(['ocr done']);
+  });
+});
+
+describe('following the whole list', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  // The Jobs page starts this inside an effect: reading the add-on list there would tie the effect
+  // to every health refresh and restart the polling each time.
+  it('reads the add-on list only once it is running, not while being set up', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ jobs: [], now: 1 }), { status: 200 })));
+    const addons = vi.fn((): ('media' | 'ocr')[] => ['media']);
+    const stop = followAll(() => {}, () => {}, addons);
+    expect(addons).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(addons).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it('says which add-ons did not answer', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        url === '/api/ocr/jobs'
+          ? new Response('{"error":"down"}', { status: 503 })
+          : new Response(JSON.stringify({ jobs: [job('running')], now: 1 }), { status: 200 }),
+      ),
+    );
+    const seen: string[][] = [];
+    const stop = followAll((_jobs, _now, missing) => seen.push(missing), () => {}, () => ['media', 'ocr']);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([['ocr']]);
+    stop();
+  });
+});
+
+describe('following the whole list, as add-ons come and go', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  // Opened directly, the Jobs page starts before the add-ons' health is in: an empty list then
+  // would read as "no jobs" for 10 s.
+  it('waits for the add-on list rather than reporting no jobs', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ jobs: [job('done')], now: 1 }), { status: 200 })));
+    let known: ('media' | 'ocr')[] = [];
+    const seen: number[] = [];
+    const stop = followAll((jobs) => seen.push(jobs.length), () => {}, () => known);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([]);
+    known = ['media'];
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(seen).toEqual([1]);
+    stop();
+  });
+
+  // An add-on that stops soon drops out of the ready list; its jobs must not vanish without a word.
+  it('keeps asking an add-on it has seen, so one that went down is named', async () => {
+    vi.useFakeTimers();
+    let ocrUp = true;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        url === '/api/ocr/jobs' && !ocrUp
+          ? new Response('{"error":"down"}', { status: 503 })
+          : new Response(JSON.stringify({ jobs: [], now: 1 }), { status: 200 }),
+      ),
+    );
+    let known: ('media' | 'ocr')[] = ['media', 'ocr'];
+    const missing: string[][] = [];
+    const stop = followAll((_j, _n, m) => missing.push(m), () => {}, () => known);
+    await vi.advanceTimersByTimeAsync(0);
+    ocrUp = false;
+    known = ['media'];
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(missing).toEqual([[], ['ocr']]);
+    stop();
   });
 });

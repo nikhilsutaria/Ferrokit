@@ -72,6 +72,17 @@ section. How to run and develop is in `README.md`.
 - **Final review:** 2 important findings fixed (OCRmyPDF scratch leaking into RAM on cancel; an
   unusable jobs folder reported as "full"); 9 minor ones deferred (below).
 
+## Deferred fixes (2026-11-18)
+
+The 12 deferred minors people would notice are fixed, each with a test that failed first: a panic in
+a job fails it and frees its lane; merges pad silent clips with silence; the fast merge compares sample
+rate and channels too; tools that keep the container pick it from the probe when the upload's
+extension is missing or odd; skipped picture subtitle tracks are named in a note on the result;
+Windows-1252 subtitles are converted to UTF-8; the core follows the Media add-on's own upload limit;
+a vanished OCR job names the OCR add-on; the OCR page checks the size before uploading; the Jobs page
+no longer restarts its polling on each health refresh and says when an add-on isn't answering; the
+OCR bar creeps through PDF/A conversion; a missing progress plugin no longer fails every OCR job.
+
 ## Known limits
 
 - PDF → Excel isn't there (LibreOffice can't do it; good table extraction is its own project).
@@ -95,15 +106,16 @@ section. How to run and develop is in `README.md`.
   folder is cleared at start). No GPU, so long 4K encodes are slow. Files whose length ffmpeg can't read
   show a moving bar and the time processed instead of a percentage. Anyone on the LAN can see, download or
   cancel any job.
-- OCR jobs, deferred from the final review: no progress during PDF/A conversion (the bar waits at 90 %);
-  a missing progress plugin fails every job as "couldn't be read"; a vanished OCR job's card names the
-  Media add-on; the OCR page has no client-side size check; the Jobs page restarts its polling on each
-  health refresh and drops a down add-on's jobs without a note.
-- Media, deferred from the final review: merging a silent clip with others drops all sound; the
-  fast merge doesn't compare audio sample rates; files with no extension fail in tools that keep the
-  container; picture subtitle tracks are skipped without a note; non-UTF-8 .srt files burn in garbled;
-  a panic inside a job leaves its lane stuck until restart; the core's and the add-on's upload limits
-  are two settings that should match.
+- Media: merging clips falls back to no sound only when a silent clip's length is unknown. Uploaded
+  subtitles that aren't UTF-8 are read as Windows-1252, so other legacy encodings (Cyrillic, Greek) still
+  burn in garbled; save them as UTF-8. During OCR's last steps (PDF/A above all) the bar creeps towards
+  99 % on an estimate, since OCRmyPDF reports nothing there.
+- Deferred from the review of those fixes: a QuickTime file with no usable extension and PCM or ProRes
+  streams is kept as .mp4, which can fail (always using .mov for that family would fix it); the 20 MB
+  subtitle cap is checked after the upload is saved; one bad byte in a UTF-8 subtitle makes the whole
+  file be read as Windows-1252; the size hint rounds to tenths of a GB ("0 GB" under ~52 MB); without
+  the OCR plugin the card says "processed" for elapsed time; the panic test covers only a panic inside
+  the running work; a huge reported upload limit isn't clamped.
 
 ## Next batch candidates (not yet chosen)
 

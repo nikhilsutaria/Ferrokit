@@ -96,7 +96,7 @@ echo made > "$last"
 #[tokio::test]
 async fn progress_rises_to_done() {
     let r = rig(STEADY);
-    let id = run(&r, Plan { lane: Lane::Video, expected_secs: Some(10.0), steps: vec![Step::Run(args(&["-i", "in-1.mp4", "out.mp4"]))], output: out_file("out.mp4"), files: vec![] });
+    let id = run(&r, Plan { lane: Lane::Video, expected_secs: Some(10.0), steps: vec![Step::Run(args(&["-i", "in-1.mp4", "out.mp4"]))], output: out_file("out.mp4"), files: vec![], note: None });
     let (seen, job) = follow(&r, &id).await;
     assert_eq!(job.state, State::Done, "{job:?}");
     assert_eq!(job.percent, Some(100.0));
@@ -125,6 +125,7 @@ async fn two_pass_progress_is_weighted_and_whitelisted() {
         ],
         output: out_file("out.mp4"),
         files: vec![],
+        note: None,
     };
     let id = run(&r, plan);
     let (seen, job) = follow(&r, &id).await;
@@ -165,6 +166,7 @@ async fn second_pass_is_built_from_the_first() {
         )],
         output: out_file("out.mp4"),
         files: vec![],
+        note: None,
     };
     let id = run(&r, plan);
     let (_, job) = follow(&r, &id).await;
@@ -188,7 +190,7 @@ fn alive(pid: &str) -> bool {
 #[tokio::test]
 async fn cancel_kills_ffmpeg_tree() {
     let r = rig(HANGS);
-    let id = run(&r, Plan { lane: Lane::Video, expected_secs: Some(10.0), steps: vec![Step::Run(args(&["-i", "in-1.mp4", "out.mp4"]))], output: out_file("out.mp4"), files: vec![] });
+    let id = run(&r, Plan { lane: Lane::Video, expected_secs: Some(10.0), steps: vec![Step::Run(args(&["-i", "in-1.mp4", "out.mp4"]))], output: out_file("out.mp4"), files: vec![], note: None });
     let pidfile = r.fakes.join("pid");
     let t = Instant::now();
     while !pidfile.exists() {
@@ -217,7 +219,7 @@ exit 1
 #[tokio::test]
 async fn failures_become_plain_messages() {
     let r = rig(BROKEN);
-    let id = run(&r, Plan { lane: Lane::Video, expected_secs: None, steps: vec![Step::Run(args(&["-i", "in-1.mp4", "out.mp4"]))], output: out_file("out.mp4"), files: vec![] });
+    let id = run(&r, Plan { lane: Lane::Video, expected_secs: None, steps: vec![Step::Run(args(&["-i", "in-1.mp4", "out.mp4"]))], output: out_file("out.mp4"), files: vec![], note: None });
     let (_, job) = follow(&r, &id).await;
     assert_eq!(job.state, State::Failed);
     assert_eq!(job.error.as_deref(), Some("This file looks damaged or isn't a media file ffmpeg can read."));
@@ -247,6 +249,7 @@ async fn zip_output() {
         steps: vec![Step::Run(args(&["-i", "in-1.mp4", "frame-%03d.jpg"]))],
         output: Out::Zip { prefix: "frame-", download: "clip-frames.zip".into() },
         files: vec![],
+        note: None,
     };
     let id = run(&r, plan);
     let (_, job) = follow(&r, &id).await;
@@ -262,8 +265,16 @@ async fn zip_output() {
 #[tokio::test]
 async fn missing_output_is_an_error() {
     let r = rig("#!/bin/sh\necho progress=end\n");
-    let id = run(&r, Plan { lane: Lane::Video, expected_secs: None, steps: vec![Step::Run(args(&["-i", "in-1.mp4", "out.mp4"]))], output: out_file("out.mp4"), files: vec![] });
+    let id = run(&r, Plan { lane: Lane::Video, expected_secs: None, steps: vec![Step::Run(args(&["-i", "in-1.mp4", "out.mp4"]))], output: out_file("out.mp4"), files: vec![], note: None });
     let (_, job) = follow(&r, &id).await;
     assert_eq!(job.state, State::Failed);
     assert!(job.error.unwrap().contains("made no file"));
+}
+
+#[tokio::test]
+async fn the_plans_note_reaches_the_result() {
+    let r = rig(STEADY);
+    let id = run(&r, Plan { lane: Lane::Video, expected_secs: None, steps: vec![Step::Run(args(&["-i", "in-1.mp4", "out.mp4"]))], output: out_file("out.mp4"), files: vec![], note: Some("Heads up.".into()) });
+    let (_, job) = follow(&r, &id).await;
+    assert_eq!(job.result.expect("a result").note.as_deref(), Some("Heads up."));
 }

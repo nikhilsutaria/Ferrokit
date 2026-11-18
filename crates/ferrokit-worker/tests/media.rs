@@ -330,3 +330,26 @@ async fn without_ffmpeg_media_is_503() {
     let health: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(health["media"]["ops"], Value::Array(vec![]));
 }
+
+/// ffmpeg's subtitles filter assumes UTF-8; an older Windows-1252 .srt is rewritten before it runs.
+#[tokio::test]
+async fn windows_1252_subtitles_are_saved_as_utf8() {
+    let f = fixture();
+    std::fs::write(f.fakes.join("sleep"), "5").unwrap();
+    let b = "XBOUNDARYX";
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"clip.mkv\"\r\n\r\nvideo\r\n").as_bytes());
+    body.extend_from_slice(format!("--{b}\r\nContent-Disposition: form-data; name=\"subtitle\"; filename=\"words.srt\"\r\n\r\n").as_bytes());
+    body.extend_from_slice(b"1\n00:00:01,000 --> 00:00:02,000\ncaf\xE9\n\r\n");
+    body.extend_from_slice(format!("--{b}\r\nContent-Disposition: form-data; name=\"options\"\r\n\r\n{{\"mode\":\"burn\"}}\r\n--{b}--\r\n").as_bytes());
+    let req = Request::post("/media/subtitles")
+        .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={b}"))
+        .body(Body::from(body))
+        .unwrap();
+    let (status, _, body) = call(&f.app, req).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{}", String::from_utf8_lossy(&body));
+    let id = serde_json::from_slice::<Value>(&body).unwrap()["id"].as_str().unwrap().to_string();
+    let saved = std::fs::read(f.jobs.join(&id).join("sub.srt")).unwrap();
+    assert_eq!(String::from_utf8(saved).expect("UTF-8"), "1\n00:00:01,000 --> 00:00:02,000\ncafé\n");
+    call(&f.app, Request::delete(format!("/media/jobs/{id}")).body(Body::empty()).unwrap()).await;
+}

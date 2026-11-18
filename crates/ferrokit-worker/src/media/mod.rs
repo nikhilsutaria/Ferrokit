@@ -79,6 +79,25 @@ fn safe_ext(name: &str) -> String {
     }
 }
 
+/// The largest subtitle file taken; it is read into memory to check its text encoding.
+const MAX_SUBTITLE: u64 = 20 * 1024 * 1024;
+
+/// An uploaded subtitle file as UTF-8, when it isn't already: ffmpeg's subtitles filter assumes UTF-8,
+/// and older .srt files are often Windows-1252, which burned in as garbled accents. None = use as is.
+fn subtitle_as_utf8(bytes: &[u8]) -> Option<String> {
+    // UTF-16 with a byte-order mark is read correctly by ffmpeg itself.
+    if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) || std::str::from_utf8(bytes).is_ok() {
+        return None;
+    }
+    // Windows-1252: Latin-1 plus typographic marks in 0x80..=0x9F. Its five undefined bytes map to
+    // the matching Latin-1 control characters, so nothing fails.
+    const HIGH: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8D}', 'Ž', '\u{8F}', '\u{90}', '‘', '’', '“',
+        '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9D}', 'ž', 'Ÿ',
+    ];
+    Some(bytes.iter().map(|&b| if (0x80..0xA0).contains(&b) { HIGH[(b - 0x80) as usize] } else { b as char }).collect())
+}
+
 struct Upload {
     inputs: Vec<(String, String, u64)>, // (fixed file, original name, bytes)
     subtitle: Option<String>,
@@ -176,6 +195,15 @@ async fn prepare(m: &Media, op: &str, dir: &Path, form: Multipart) -> Result<(Ve
                 up.subtitle_name
             )));
         }
+        let path = dir.join(sub);
+        let big = std::fs::metadata(&path).map(|m| m.len() > MAX_SUBTITLE).unwrap_or(true);
+        if big {
+            return Err(ApiError::unprocessable(format!("{} is too big for a subtitle file (over 20 MB).", up.subtitle_name)));
+        }
+        let bytes = tokio::fs::read(&path).await.map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Couldn't read the subtitles: {e}")))?;
+        if let Some(text) = subtitle_as_utf8(&bytes) {
+            tokio::fs::write(&path, text).await.map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Couldn't save the subtitles: {e}")))?;
+        }
     }
     plan::check_streams(op, &inputs)?;
     let plan = plan::plan(op, up.options, &inputs, up.subtitle.as_deref())?;
@@ -210,6 +238,21 @@ pub async fn file(State(s): State<AppState>, UrlPath(id): UrlPath<String>, req: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf8_subtitles_are_left_alone() {
+        assert_eq!(subtitle_as_utf8("1\n00:00:01,000 --> 00:00:02,000\nCafé\n".as_bytes()), None);
+        assert_eq!(subtitle_as_utf8(b"\xEF\xBB\xBFHello"), None);
+        assert_eq!(subtitle_as_utf8(b"\xFF\xFEH\x00i\x00"), None, "UTF-16 with a byte-order mark is read by ffmpeg");
+        assert_eq!(subtitle_as_utf8(b"\xFE\xFF\x00H\x00i"), None);
+    }
+
+    #[test]
+    fn windows_1252_subtitles_become_utf8() {
+        assert_eq!(subtitle_as_utf8(b"caf\xE9 \x93hi\x94 \x80"), Some("café “hi” €".to_string()));
+        // Bytes Windows-1252 leaves undefined still turn into something rather than failing.
+        assert_eq!(subtitle_as_utf8(b"a\x81b"), Some("a\u{81}b".to_string()));
+    }
 
     #[test]
     fn extensions_are_tamed() {

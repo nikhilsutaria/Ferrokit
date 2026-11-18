@@ -166,7 +166,7 @@
   {#if ids.length}
     <div class="jobs">
       {#each ids as id (id)}
-        <JobCard job={byId[id]} onremoved={() => dismiss(id)} />
+        <JobCard job={byId[id]} {addon} onremoved={() => dismiss(id)} />
       {/each}
     </div>
   {/if}

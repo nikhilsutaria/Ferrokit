@@ -1,16 +1,20 @@
 <script lang="ts">
   // One background media job: where it is in line, how far along, then the result with a preview.
+  import { ADDON_LABEL } from '$lib/addons.svelte';
   import { formatBytes } from '$lib/files';
-  import { expiresIn, fileUrl, formatEta, formatTime, ordinal, removeJob, type Job } from '$lib/media';
+  import { expiresIn, fileUrl, formatEta, formatTime, ordinal, removeJob, type Job, type JobAddon } from '$lib/media';
   import { toolById } from '$lib/registry';
 
   let {
     job,
+    addon = 'media',
     showTool = false,
     now = Date.now(),
     onremoved,
   }: {
     job: Job | 'gone';
+    /** Which add-on the job was on: named when the job has gone. */
+    addon?: JobAddon;
     /** Show which tool made it (on the Jobs page). */
     showTool?: boolean;
     /** The server's clock, for "Deleted in…". */
@@ -45,7 +49,7 @@
 
 <article class="card" data-state={j?.state ?? 'gone'} aria-live="polite">
   {#if !j}
-    <p class="gone">This job is no longer on the server. It may have expired or the Media add-on restarted.</p>
+    <p class="gone">This job is no longer on the server. It may have expired or the {ADDON_LABEL[addon]} restarted.</p>
     {#if onremoved}<button type="button" class="quiet" onclick={onremoved}>Dismiss</button>{/if}
   {:else}
     <header>
@@ -92,6 +96,7 @@
         <span><strong>{j.result.name}</strong> <span class="hint">{formatBytes(j.result.bytes)}{size && j.inputs.length === 1 && kind === 'video' ? ` (was ${formatBytes(size)})` : ''}</span></span>
         <span class="hint">{expiresIn(j, now)}</span>
       </div>
+      {#if j.result.note}<p class="status">{j.result.note}</p>{/if}
     {:else if j.state === 'failed'}
       <p class="error" role="alert">{j.error ?? 'This job failed.'}</p>
     {:else if j.state === 'cancelled'}

@@ -373,6 +373,39 @@ async fn media_limit_is_separate() {
     assert_eq!(seen.lock().unwrap().len(), 1);
 }
 
+/// The media add-on reports its own upload limit in its health; the core follows it, so the
+/// limit is set in one place. The core's own setting is only used until the add-on has answered.
+#[tokio::test]
+async fn media_limit_follows_the_add_on() {
+    let (url, seen) = fake_media().await;
+    let s = app::State::new(Config {
+        office_url: CLOSED.into(),
+        ocr_url: CLOSED.into(),
+        media_url: url,
+        max_upload_mb: 1,
+        media_max_upload_mb: 1,
+        addon_limit_override: Some(Duration::from_secs(5)),
+        ..Config::default()
+    });
+    let big = || {
+        Request::post("/api/media/video-trim")
+            .header(header::CONTENT_TYPE, "multipart/form-data; boundary=B")
+            .header(header::CONTENT_LENGTH, (3 * 1024 * 1024).to_string())
+            .body(Body::from(vec![0u8; 3 * 1024 * 1024]))
+            .unwrap()
+    };
+    let (status, _, _) = send(&s, big()).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "before the add-on answers, the core's setting applies");
+    let report = |mb: u64| ferrokit_server::addons::Status { ready: true, info: json!({ "ops": ["video-trim"], "maxUploadMb": mb }) };
+    s.addons.set(ferrokit_server::addons::Addon::Media, report(5));
+    let (status, _, _) = send(&s, big()).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "the add-on allows 5 MB");
+    s.addons.set(ferrokit_server::addons::Addon::Media, report(2));
+    let (status, _, _) = send(&s, big()).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "the add-on allows only 2 MB");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
 #[tokio::test]
 async fn media_job_get_delete_and_list_forward() {
     let (url, seen) = fake_media().await;

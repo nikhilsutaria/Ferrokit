@@ -188,6 +188,7 @@ async fn health_counts_ocr_jobs() {
     assert_eq!(health["ocr"]["running"], 0);
     assert_eq!(health["ocr"]["queued"], 0);
     assert!(health["ocr"]["ops"].as_array().unwrap().iter().any(|o| o == "pdf-job"), "{health}");
+    assert_eq!(health["ocr"]["maxUploadMb"], 10, "for the page's size check before uploading");
 }
 
 #[tokio::test]

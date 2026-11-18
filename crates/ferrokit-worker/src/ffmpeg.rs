@@ -187,7 +187,7 @@ pub async fn run_plan(programs: Programs, plan: Plan, ctx: Ctx) -> Result<Finish
             if !file.is_file() {
                 return Err("ffmpeg finished but made no file.".into());
             }
-            Ok(Finished { file, name: download, mime })
+            Ok(Finished { file, name: download, mime, note: plan.note })
         }
         Out::Zip { prefix, download } => {
             let dir = ctx.dir.clone();
@@ -195,7 +195,7 @@ pub async fn run_plan(programs: Programs, plan: Plan, ctx: Ctx) -> Result<Finish
                 .await
                 .map_err(|e| e.to_string())?
                 .map_err(|_| "ffmpeg finished but made no files.".to_string())?;
-            Ok(Finished { file, name: download, mime: "application/zip" })
+            Ok(Finished { file, name: download, mime: "application/zip", note: plan.note })
         }
     }
 }
