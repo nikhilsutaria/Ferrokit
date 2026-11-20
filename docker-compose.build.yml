@@ -1,0 +1,24 @@
+# Build Ferrokit from this checkout instead of pulling the published images.
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+# or, to make that the default here, put these two lines in a .env file next to docker-compose.yml:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml
+#   COMPOSE_PATH_SEPARATOR=:
+# Local builds keep the published names, so a later `docker compose pull` replaces them.
+services:
+  ferrokit:
+    build: .
+
+  ferrokit-office:
+    build:
+      context: .
+      dockerfile: addons/office/Dockerfile
+
+  ferrokit-ocr:
+    build:
+      context: .
+      dockerfile: addons/ocr/Dockerfile
+
+  ferrokit-media:
+    build:
+      context: .
+      dockerfile: addons/media/Dockerfile

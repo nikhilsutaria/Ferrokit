@@ -1,0 +1,112 @@
+# Publishing a GitHub Release (tag vX.Y.Z) builds the four images and pushes them to
+# ghcr.io/<owner>/ferrokit, -office, -ocr and -media, tagged X.Y.Z, X.Y and latest.
+# Running it by hand from the Actions tab runs the tests and builds the images without pushing them.
+name: Release images
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: The tag matches the version in Cargo.toml
+        if: github.event_name == 'release'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Release tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml. Bump the version (Cargo.toml and web/package.json), merge, then tag v$version."
+            exit 1
+          fi
+
+      - name: Rust tests
+        run: ./scripts/rust.sh test --workspace
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Web type-check and tests
+        working-directory: web
+        run: |
+          npm ci
+          npm run check
+          npm test
+
+  images:
+    name: Image ${{ matrix.image }}
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ferrokit
+            dockerfile: Dockerfile
+            description: Ferrokit, a self-hosted toolbox for PDFs, images, video and code on your home network.
+          - image: ferrokit-office
+            dockerfile: addons/office/Dockerfile
+            description: Ferrokit's Office add-on (LibreOffice, Chromium, Ghostscript).
+          - image: ferrokit-ocr
+            dockerfile: addons/ocr/Dockerfile
+            description: Ferrokit's OCR add-on (OCRmyPDF and Tesseract).
+          - image: ferrokit-media
+            dockerfile: addons/media/Dockerfile
+            description: Ferrokit's Media add-on (ffmpeg).
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to ghcr.io
+        if: github.event_name == 'release'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=test,enable=${{ github.event_name != 'release' }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.image }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.licenses=GPL-3.0-or-later
+
+      - name: Build${{ github.event_name == 'release' && ' and push' || '' }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'release' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}

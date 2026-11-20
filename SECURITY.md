@@ -24,7 +24,8 @@ publishing details until a fix is out. If you'd like credit, you'll be named in 
 
 ## Supported versions
 
-Ferrokit doesn't have numbered releases yet. Fixes go to `main`, so run the latest `main`.
+Only the latest release gets security fixes. If you pinned an older version in `docker-compose.yml`,
+move to the latest one.
 
 ## What Ferrokit is built to resist
 

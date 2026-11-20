@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end checks for the media add-on against a running stack:
-#   docker compose --profile media up -d --build
+#   docker compose --profile media up -d --build   # builds your checkout with the .env from CONTRIBUTING.md
 #   scripts/media-smoke.sh            (QUICK=1 skips the 75-second expiry check;
 #                                      ONLY=text runs just the checks whose name contains it)
 # Every fixture is generated inside the media container with ffmpeg, so nothing binary lives in the repo.

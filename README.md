@@ -49,18 +49,19 @@ recognition and video are extras you switch on only if you want them.
 
 ## Get started
 
-You need a computer on your network that runs Docker. Ferrokit is built and tested on 64-bit x86
-(most PCs, mini PCs and Intel or AMD NAS boxes); ARM machines such as a Raspberry Pi aren't tested
+You need a computer on your network that runs Docker. The published images are for 64-bit x86
+(most PCs, mini PCs and Intel or AMD NAS boxes); ARM machines such as a Raspberry Pi aren't supported
 yet. The core itself needs little memory; the add-ons below need more.
 
+Make a folder for Ferrokit, download its Compose file into it, and start it:
+
 ```sh
-git clone https://github.com/nikhilsutaria/Ferrokit.git
-cd Ferrokit
-docker compose up -d --build
+mkdir ferrokit && cd ferrokit
+curl -fsSLO https://raw.githubusercontent.com/nikhilsutaria/Ferrokit/main/docker-compose.yml
+docker compose up -d
 ```
 
-The first build compiles everything, so give it several minutes. Then open
-`http://<your-server's-address>:8080` on any phone, tablet or computer on the same network.
+Then open `http://<your-server's-address>:8080` on any phone, tablet or computer on the same network.
 
 ### Optional extras
 
@@ -76,10 +77,11 @@ command to start it.
 Start the ones you want:
 
 ```sh
-docker compose --profile office --profile ocr --profile media up -d --build
+docker compose --profile office --profile ocr --profile media up -d
 ```
 
-To update, run `git pull` and then the same `docker compose` command again.
+To update to the latest release, run `docker compose pull` (with the same `--profile` flags), then the
+same `up -d` command again.
 
 ## Keep it on your home network
 

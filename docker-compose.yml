@@ -1,10 +1,12 @@
 # Ferrokit on your home network.
-#   docker compose up -d --build
+#   docker compose up -d
 # then open http://<your-server>:8080 from any device on the LAN.
+# Update with: docker compose pull && docker compose up -d
+# To stay on one version, replace :latest with a release such as :0.1.0 (same for every image).
+# Building from source instead? See docker-compose.build.yml.
 services:
   ferrokit:
-    build: .
-    image: ferrokit:latest
+    image: ghcr.io/nikhilsutaria/ferrokit:latest
     container_name: ferrokit
     restart: unless-stopped
     ports:
@@ -33,10 +35,7 @@ services:
   # Office: Word/Excel/PowerPoint <-> PDF, web page / Markdown / EPUB -> PDF, PDF/A.
   ferrokit-office:
     profiles: [office]
-    build:
-      context: .
-      dockerfile: addons/office/Dockerfile
-    image: ferrokit-office:latest
+    image: ghcr.io/nikhilsutaria/ferrokit-office:latest
     container_name: ferrokit-office
     restart: unless-stopped
     environment:
@@ -53,10 +52,7 @@ services:
   # "Make PDF searchable" runs as a background job; results wait on ferrokit-ocr-jobs for 1 hour.
   ferrokit-ocr:
     profiles: [ocr]
-    build:
-      context: .
-      dockerfile: addons/ocr/Dockerfile
-    image: ferrokit-ocr:latest
+    image: ghcr.io/nikhilsutaria/ferrokit-ocr:latest
     container_name: ferrokit-ocr
     restart: unless-stopped
     environment:
@@ -76,10 +72,7 @@ services:
   # It sits on an internal network shared only with Ferrokit, so it has no internet access.
   ferrokit-media:
     profiles: [media]
-    build:
-      context: .
-      dockerfile: addons/media/Dockerfile
-    image: ferrokit-media:latest
+    image: ghcr.io/nikhilsutaria/ferrokit-media:latest
     container_name: ferrokit-media
     restart: unless-stopped
     environment:
