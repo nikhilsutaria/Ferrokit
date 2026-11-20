@@ -19,10 +19,6 @@
     active = 0;
   });
 
-  $effect(() => {
-    if (autofocus) input?.focus();
-  });
-
   function go(id: string) {
     query = '';
     open = false;
@@ -72,8 +68,12 @@
         stroke-linecap="round"
       /></svg
     >
+    <!-- The home page is a search box, so it starts focused. It has to be the attribute: SvelteKit moves
+         focus to the body after each navigation unless an element has `autofocus`. -->
+    <!-- svelte-ignore a11y_autofocus -->
     <input
       bind:this={input}
+      {autofocus}
       bind:value={query}
       type="search"
       placeholder={hero ? 'What do you need to do?' : 'Search tools'}
