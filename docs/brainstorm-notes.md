@@ -3,7 +3,7 @@
 The design and the full tool catalog are in `docs/superpowers/specs/2026-11-13-ferrokit-design.md`
 (batch 1, plus the "Batch 2" to "Batch 6" sections). The batch 5 plan is in
 `docs/superpowers/plans/2026-11-16-media-addon.md`; batch 6 was small enough to build from its design
-section. How to run and develop is in `README.md`.
+section. How to run it is in `docs/self-hosting.md`; how to develop is in `CONTRIBUTING.md`.
 
 ## Decisions
 
