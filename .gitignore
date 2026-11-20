@@ -3,3 +3,4 @@
 /web/.svelte-kit
 /web/build
 .superpowers/
+.gh-token
