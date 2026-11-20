@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end checks for the Office and OCR add-ons against a running stack:
-#   docker compose --profile office --profile ocr up -d --build
+#   docker compose --profile office --profile ocr up -d --build   # builds your checkout with the .env from CONTRIBUTING.md
 #   scripts/addons-smoke.sh
 # Every fixture is generated here, so nothing binary lives in the repo.
 set -u

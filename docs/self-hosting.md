@@ -13,11 +13,12 @@ jobs. To just get it running, the [README](../README.md#get-started) is enough.
 ## The core
 
 ```sh
-docker compose up -d --build
+curl -fsSLO https://raw.githubusercontent.com/nikhilsutaria/Ferrokit/main/docker-compose.yml
+docker compose up -d
 ```
 
 This starts one container, `ferrokit`, on port 8080. It runs every PDF, image and developer tool.
-The image is about 65 MB (a 19 MB download). Settings go in the `environment` section of the
+The image (`ghcr.io/nikhilsutaria/ferrokit`) is about 65 MB, a 19 MB download. Settings go in the `environment` section of the
 `ferrokit` service in `docker-compose.yml`:
 
 | Variable | Default | Meaning |
@@ -50,7 +51,7 @@ is running, the tools that need it say so and show the command to start it. Swit
 Compose profiles:
 
 ```sh
-docker compose --profile office --profile ocr --profile media up -d --build
+docker compose --profile office --profile ocr --profile media up -d
 ```
 
 or put `COMPOSE_PROFILES=office,ocr,media` in a `.env` file next to `docker-compose.yml`, so a plain
@@ -125,12 +126,18 @@ Settings on the `ferrokit-ocr` service: `FERROKIT_OCR_KEEP_MIN` (default `60`),
 ## Updating
 
 ```sh
-git pull
-docker compose up -d --build        # add your --profile flags, or use COMPOSE_PROFILES
+docker compose pull                 # add your --profile flags, or use COMPOSE_PROFILES
+docker compose up -d
 ```
+
+`:latest` follows each new release. To stay on one version, replace `:latest` with a release number
+such as `:0.1.0` in all four `image:` lines, and change it when you choose to update. The releases and
+what changed are on the [Releases page](https://github.com/nikhilsutaria/Ferrokit/releases).
 
 Restarting an add-on loses the background jobs in it, finished results included, so update when the
 Jobs page is empty.
+
+To build the images yourself from a checkout instead, see [`docker-compose.build.yml`](../docker-compose.build.yml).
 
 ## Limits worth knowing
 
@@ -164,3 +171,9 @@ separate program; none is linked into Ferrokit.
 | unpaper | OCR | GPL-2.0 |
 | pngquant | OCR | GPL-3.0-or-later |
 | ffmpeg (Debian's build, with x264 and x265) | Media | GPL-2.0-or-later |
+
+These programs are installed unchanged from Alpine Linux 3.22 (the core) and Debian 13 "trixie" (the
+add-ons). Their source code is available from those projects, at
+[sources.debian.org](https://sources.debian.org) and in Alpine's
+[aports](https://gitlab.alpinelinux.org/alpine/aports) repository. Ferrokit's own source for each
+image is this repository at the matching release tag.

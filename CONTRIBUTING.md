@@ -9,6 +9,7 @@ covers how to build Ferrokit, how it's laid out, and what a change needs before 
 - [Add a tool](#add-a-tool)
 - [Tests](#tests)
 - [Pull requests](#pull-requests)
+- [Releases](#releases)
 - [Writing in the app](#writing-in-the-app)
 - [Licence](#licence)
 
@@ -31,9 +32,14 @@ tests run in a container.
 ```sh
 git clone https://github.com/nikhilsutaria/Ferrokit.git
 cd Ferrokit
+printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml\nCOMPOSE_PATH_SEPARATOR=:\n' > .env
 docker compose up -d --build                    # the whole app on http://localhost:8080
 cd web && npm install && npm run dev            # live UI on :5173; /api goes to :8080
 ```
+
+`docker-compose.yml` pulls the published images. The `.env` line adds `docker-compose.build.yml`, so
+`docker compose` builds from your checkout instead. Local builds keep the published image names, so the
+test scripts use them; a `docker compose pull` would replace them with the released ones.
 
 `npm run dev` needs the server running, because Vite forwards `/api` to it. Start the add-ons you're
 working on with their profiles (`--profile office`, `ocr`, `media`).
@@ -109,6 +115,22 @@ The Rust suite and the add-ons use a fair amount of memory, so on a small machin
 - Don't copy code from other projects. Ferrokit is written from scratch; its tool list was inspired by
   Stirling-PDF, IT-Tools and SnapOtter, but none of their code is used. A new dependency needs a licence
   that works with GPL-3.0.
+
+## Releases
+
+Publishing a GitHub Release builds the four images and pushes them to `ghcr.io/nikhilsutaria/`
+(`ferrokit`, `ferrokit-office`, `ferrokit-ocr`, `ferrokit-media`), tagged with the version, the
+major.minor version and `latest`. The [release workflow](.github/workflows/release.yml) runs the Rust
+and web tests first, and stops if the tag doesn't match the version in `Cargo.toml`.
+
+1. Bump `version` in `Cargo.toml` and `web/package.json`, and merge that to `main`.
+2. Run the end-to-end checks against a local build (they aren't part of the workflow).
+3. On GitHub, draft a new release with a tag `v<version>` (for example `v0.2.0`) on `main`, write what
+   changed, and publish it.
+4. Watch the run in the Actions tab. It takes a while: the add-on images are large.
+
+To try the workflow without publishing anything, run it by hand from the Actions tab. It runs the tests
+and builds the images, but doesn't push them.
 
 ## Writing in the app
 

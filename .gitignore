@@ -5,3 +5,4 @@
 .superpowers/
 .gh-token
 docs/superpowers/
+.env
