@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "ferrokit-http"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "ferrokit-image",
@@ -1041,7 +1041,7 @@ dependencies = [
 
 [[package]]
 name = "ferrokit-image"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "color_quant",
  "fast_image_resize",
@@ -1065,7 +1065,7 @@ dependencies = [
 
 [[package]]
 name = "ferrokit-pdf"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "image 0.25.10",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "ferrokit-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "ferrokit-http",
@@ -1103,7 +1103,7 @@ dependencies = [
 
 [[package]]
 name = "ferrokit-sign"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cms",
  "der",
@@ -1123,7 +1123,7 @@ dependencies = [
 
 [[package]]
 name = "ferrokit-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "chromiumoxide",
