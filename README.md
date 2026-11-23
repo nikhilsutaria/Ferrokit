@@ -21,8 +21,9 @@ passport photos and favicons. Turn a logo into an SVG, or copy the text out of a
 shaky footage, add or pull out subtitles, and grab thumbnails. For audio: convert, trim, split, even
 out the loudness, shift the pitch, and cut silence and background noise.
 
-**Everyday and developer (32 tools).** QR codes (Wi-Fi ones too), a password generator and a text
-compare, plus developer tools such as a JSON formatter, regex tester, JWT decoder and subnet calculator.
+**Everyday and developer (65 tools).** QR codes (Wi-Fi ones too), a password generator and a text
+compare, plus developer tools such as a JSON formatter and diff, SQL and XML formatters, a regex tester,
+JWT decoder, authenticator codes, RSA keys, `docker run` to Compose and a subnet calculator.
 
 <p>
   <img src="docs/images/page-editor.png" width="49%" alt="The page editor: six PDF pages as thumbnails, each with buttons to rotate, move or delete it">
@@ -93,7 +94,7 @@ more in [SECURITY.md](SECURITY.md).
 
 ## What's next
 
-The home page also lists 63 tools that are on the way. Next up are local AI tools that run on your CPU
+The home page also lists 30 tools that are on the way. Next up are local AI tools that run on your CPU
 (background removal, upscaling, transcription), more file and data tools, and a way to chain tools
 together.
 

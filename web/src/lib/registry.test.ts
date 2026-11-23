@@ -28,7 +28,15 @@ describe('registry: media add-on', () => {
     expect(media.every((t) => t.addon === 'media')).toBe(true);
   });
 
-  it('counts 130 ready tools', () => {
-    expect(tools.filter((t) => t.ready)).toHaveLength(130);
+  it('counts 163 ready tools', () => {
+    expect(tools.filter((t) => t.ready)).toHaveLength(163);
+  });
+});
+
+describe('registry: developer tools', () => {
+  it('has every browser developer tool ready; only the server-side MAC lookup is still to come', () => {
+    const dev = tools.filter((t) => t.category.startsWith('dev-'));
+    expect(dev.filter((t) => !t.ready).map((t) => t.id)).toEqual(['mac-lookup']);
+    expect(dev.filter((t) => t.runtime === 'browser').every((t) => t.ready)).toBe(true);
   });
 });

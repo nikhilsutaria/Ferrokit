@@ -1,7 +1,16 @@
 <script lang="ts">
   import { copyText } from '$lib/files';
 
-  let { text, label = 'Copy' }: { text: string | (() => string); label?: string } = $props();
+  let {
+    text,
+    label = 'Copy',
+    describe,
+  }: {
+    text: string | (() => string);
+    label?: string;
+    /** Spoken name when several Copy buttons share a page, e.g. "Copy git status". */
+    describe?: string;
+  } = $props();
   let done = $state(false);
 
   async function copy() {
@@ -12,7 +21,7 @@
   }
 </script>
 
-<button type="button" class="quiet copy" onclick={copy} aria-live="polite">
+<button type="button" class="quiet copy" onclick={copy} aria-live="polite" aria-label={describe && !done ? describe : undefined}>
   {done ? 'Copied' : label}
 </button>
 
