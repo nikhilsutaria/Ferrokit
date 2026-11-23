@@ -17,7 +17,7 @@ covers how to build Ferrokit, how it's laid out, and what a change needs before 
 
 Work is tracked in [GitHub issues](https://github.com/nikhilsutaria/Ferrokit/issues). For anything
 bigger than a typo, open an issue (or comment on an existing one) before you write code, so we can agree
-on the approach first. A new tool is a good example: the catalogue already lists 63 planned tools, and
+on the approach first. A new tool is a good example: the catalogue already lists 30 planned tools, and
 yours may be one of them.
 
 When you report a bug, say what you did, what you expected and what happened instead. Include the tool,

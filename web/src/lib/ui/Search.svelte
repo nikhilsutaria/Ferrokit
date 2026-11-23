@@ -43,6 +43,8 @@
   }
 
   function onglobalkey(e: KeyboardEvent) {
+    // A tool that uses the same keys for itself (the HTML editor's Ctrl+K link) has already handled it.
+    if (e.defaultPrevented) return;
     const target = e.target as HTMLElement;
     const typing = target.closest('input, textarea, select, [contenteditable="true"]');
     if ((e.key === '/' && !typing) || (e.key.toLowerCase() === 'k' && (e.ctrlKey || e.metaKey))) {
